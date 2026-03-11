@@ -1,0 +1,10 @@
+struct GPSPoint {
+    int taxiID;          // 用户标识 ID
+    long long timestamp; // 转换后的秒数（方便排序和计算时间差）
+    double lon;          // 经度
+    double lat;          // 纬度
+
+    // 可以在这里加一个构造函数
+    GPSPoint(int id, long long ts, double ln, double lt) 
+        : taxiID(id), timestamp(ts), lon(ln), lat(lt) {}
+};
