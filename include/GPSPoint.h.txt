@@ -1,10 +1,14 @@
+#ifndef GPSPOINT_H
+#define GPSPOINT_H
+
+#include <string>
+
+// 基础数据结构：确保全组数据定义统一
 struct GPSPoint {
-    int taxiID;          // 用户标识 ID
-    long long timestamp; // 转换后的秒数（方便排序和计算时间差）
+    int taxiID;          // 出租车编号
+    long long timestamp; // 时间戳（秒）
     double lon;          // 经度
     double lat;          // 纬度
-
-    // 可以在这里加一个构造函数
-    GPSPoint(int id, long long ts, double ln, double lt) 
-        : taxiID(id), timestamp(ts), lon(ln), lat(lt) {}
 };
+
+#endif
