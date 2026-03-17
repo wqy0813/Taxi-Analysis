@@ -1,0 +1,8 @@
+# ninja log v6
+3	141	7954560696186399	TaxiAnalysis_autogen/timestamp	f15142a2cc7a3130
+3	141	7954560696186399	TaxiAnalysis_autogen/mocs_compilation.cpp	f15142a2cc7a3130
+3	141	7954560696186399	C:/Users/Yuuka/CLionProjects/Taxi-Analysis/cmake-build-debug/TaxiAnalysis_autogen/timestamp	f15142a2cc7a3130
+3	141	7954560696186399	C:/Users/Yuuka/CLionProjects/Taxi-Analysis/cmake-build-debug/TaxiAnalysis_autogen/mocs_compilation.cpp	f15142a2cc7a3130
+145	223	7954560696687375	CMakeFiles/TaxiAnalysis.dir/TaxiAnalysis_autogen/mocs_compilation.cpp.obj	a9d4eb222eca9071
+150	2495	7954560696743044	CMakeFiles/TaxiAnalysis.dir/main.cpp.obj	ae170a3dff5e5d79
+2497	2637	7954560720210625	TaxiAnalysis.exe	2a05fe9125c81a41

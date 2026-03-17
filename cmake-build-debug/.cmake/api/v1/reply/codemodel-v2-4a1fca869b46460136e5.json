@@ -1,0 +1,79 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-Debug-4bf76caf0048cad9f3ee.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.16"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "TaxiAnalysis",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "TaxiAnalysis::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-TaxiAnalysis-Debug-500a0e98ddd22decf522.json",
+					"name" : "TaxiAnalysis",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "TaxiAnalysis_autogen::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-TaxiAnalysis_autogen-Debug-3cfad083abc600857581.json",
+					"name" : "TaxiAnalysis_autogen",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "TaxiAnalysis_autogen_timestamp_deps::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-TaxiAnalysis_autogen_timestamp_deps-Debug-e6896239ebcc23055c45.json",
+					"name" : "TaxiAnalysis_autogen_timestamp_deps",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "C:/Users/Yuuka/CLionProjects/Taxi-Analysis/cmake-build-debug",
+		"source" : "C:/Users/Yuuka/CLionProjects/Taxi-Analysis"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 7
+	}
+}

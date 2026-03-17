@@ -1,0 +1,9 @@
+C:/Users/Yuuka/CLionProjects/Taxi-Analysis/cmake-build-debug/CMakeFiles/TaxiAnalysis.dir
+C:/Users/Yuuka/CLionProjects/Taxi-Analysis/cmake-build-debug/CMakeFiles/edit_cache.dir
+C:/Users/Yuuka/CLionProjects/Taxi-Analysis/cmake-build-debug/CMakeFiles/rebuild_cache.dir
+C:/Users/Yuuka/CLionProjects/Taxi-Analysis/cmake-build-debug/CMakeFiles/list_install_components.dir
+C:/Users/Yuuka/CLionProjects/Taxi-Analysis/cmake-build-debug/CMakeFiles/install.dir
+C:/Users/Yuuka/CLionProjects/Taxi-Analysis/cmake-build-debug/CMakeFiles/install/local.dir
+C:/Users/Yuuka/CLionProjects/Taxi-Analysis/cmake-build-debug/CMakeFiles/install/strip.dir
+C:/Users/Yuuka/CLionProjects/Taxi-Analysis/cmake-build-debug/CMakeFiles/TaxiAnalysis_autogen_timestamp_deps.dir
+C:/Users/Yuuka/CLionProjects/Taxi-Analysis/cmake-build-debug/CMakeFiles/TaxiAnalysis_autogen.dir
