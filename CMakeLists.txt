@@ -15,7 +15,11 @@ cmake_minimum_required(VERSION 3.16)
  set(CMAKE_AUTOMOC ON)
  set(CMAKE_AUTORCC ON)
  
- add_executable(TaxiAnalysis main.cpp)
+ add_executable(TaxiAnalysis 
+     main.cpp
+     TrafficAnalysisSystem/TrafficAnalysisSystem.cpp
+     TrafficAnalysisSystem/TrafficAnalysisSystem.h
+ )
  
  if(Qt6_FOUND)
      target_link_libraries(TaxiAnalysis PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
