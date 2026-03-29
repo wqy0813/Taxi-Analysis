@@ -241,7 +241,33 @@
 
         fitViewToPoints(demoPath);
     }
+	function getViewBoundsJson() {
+		if (!map) return null;
 
+		var bounds = map.getBounds();
+		var sw = bounds.getSouthWest();
+		var ne = bounds.getNorthEast();
+
+		return {
+			minLon: sw.lng,
+			minLat: sw.lat,
+			maxLon: ne.lng,
+			maxLat: ne.lat
+		};
+	}
+	function getCurrentZoomLevel() {
+		if (!map) return -1;
+		return map.getZoom();
+	}
+	function getCurrentCenter() {
+    if (!map) return null;
+
+    var center = map.getCenter();
+    return {
+        lng: center.lng,
+        lat: center.lat
+    };
+	}
     // 页面加载完成后初始化
     window.onload = function() {
         initMap();
