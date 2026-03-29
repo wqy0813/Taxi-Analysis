@@ -296,7 +296,6 @@ void TrafficAnalysisSystem::onQueryTrajectory()
     demo.push_back({1, 0, 116.42400000, 39.93500000});
     demo.push_back({1, 0, 116.43400000, 39.94500000});
 
-    clearMap();
     showTrajectory(demo);
     fitViewToPoints(demo);
 }
@@ -305,7 +304,6 @@ void TrafficAnalysisSystem::onRegionSearch()
 {
     qDebug() << "点击了：区域查找";
 
-    clearMap();
     showRect(115.9, 39.7, 116.6, 40.1);
     fitViewToBounds(115.9, 39.7, 116.6, 40.1);
 }
@@ -321,7 +319,6 @@ void TrafficAnalysisSystem::onVehicleDensity()
     demo.push_back({4, 0, 116.41300000, 39.91800000});
     demo.push_back({5, 0, 116.41700000, 39.92300000});
 
-    clearMap();
     showPoints(demo);
     fitViewToPoints(demo);
 }
@@ -330,7 +327,6 @@ void TrafficAnalysisSystem::onRegionCorrelation()
 {
     qDebug() << "点击了：区域关联分析";
 
-    clearMap();
 
     // 演示：叠加显示两个矩形，不再互相清掉
     showRect(116.00, 39.80, 116.20, 39.95);
@@ -346,7 +342,6 @@ void TrafficAnalysisSystem::onFrequentPath()
 {
     qDebug() << "点击了：频繁路径分析";
 
-    clearMap();
 
     // 演示：叠加两条轨迹
     std::vector<GPSPoint> traj1;
