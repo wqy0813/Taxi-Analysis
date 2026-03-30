@@ -1,7 +1,7 @@
 #include "quadtree.h"
 #include "datamanager.h" // 假设 GPSPoint 定义在这里
 
-QuadNode::QuadNode(Rect b, int cap) 
+QuadNode::QuadNode(Rect b, int cap)
     : boundary(b), capacity(cap), nw(nullptr), ne(nullptr), sw(nullptr), se(nullptr), divided(false) {}
 
 QuadNode::~QuadNode() {
@@ -57,4 +57,25 @@ bool QuadNode::insert(int pointIdx, const std::vector<GPSPoint>& allData) {
     if (se->insert(pointIdx, allData)) return true;
 
     return false;
+}
+void QuadNode::query(const Rect& range, std::vector<int>& found,
+                     const std::vector<GPSPoint>& allData) {
+    if (!boundary.intersects(range)) {
+        return;
+    }
+
+    if (!divided) {
+        for (int idx : points) {
+            const GPSPoint& p = allData[idx];
+            if (range.contains(p.lon, p.lat)) {
+                found.push_back(idx);
+            }
+        }
+        return;
+    }
+
+    if (nw) nw->query(range, found, allData);
+    if (ne) ne->query(range, found, allData);
+    if (sw) sw->query(range, found, allData);
+    if (se) se->query(range, found, allData);
 }

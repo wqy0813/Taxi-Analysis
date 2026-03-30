@@ -3,7 +3,6 @@
 #include <QDirIterator>
 #include <QElapsedTimer>
 #include <QFile>
-#include <QFileInfo>
 #include <QTextStream>
 #include <QDateTime>
 #include <QCoreApplication>
@@ -11,25 +10,6 @@
 #include "appconfig.h"
 #include "databasemanager.h"
 #include "TrafficAnalysisSystem.h"
-
-namespace {
-QString findConfigPath() {
-    const QStringList candidates = {
-        QDir::current().absoluteFilePath("config.ini"),
-        QCoreApplication::applicationDirPath() + "/config.ini",
-        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../config.ini"),
-        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("../../config.ini")
-    };
-
-    for (const QString& path : candidates) {
-        if (QFileInfo::exists(path)) {
-            return QDir::cleanPath(path);
-        }
-    }
-
-    return QDir::cleanPath(QDir::current().absoluteFilePath("config.ini"));
-}
-}
 
 void checkAndImportData(DatabaseManager &dbm, const AppConfig& config) {
     if ( dbm.getPointCount() > 0) {
@@ -67,11 +47,7 @@ void checkAndImportData(DatabaseManager &dbm, const AppConfig& config) {
 
                 GPSPoint p;
                 p.id = parts[0].toInt();
-                const QDateTime timestamp = QDateTime::fromString(parts[1], "yyyy-MM-dd HH:mm:ss");
-                if (!timestamp.isValid()) {
-                    continue;
-                }
-                p.timestamp = timestamp.toSecsSinceEpoch();
+                p.timestamp = QDateTime::fromString(parts[1], "yyyy-MM-dd HH:mm:ss").toSecsSinceEpoch();
                 p.lon = parts[2].toDouble();
                 p.lat = parts[3].toDouble();
 
@@ -117,8 +93,9 @@ void checkAndImportData(DatabaseManager &dbm, const AppConfig& config) {
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
 
-    QString configPath = findConfigPath();
-    AppConfig config = AppConfig::load(configPath);
+    QString configPath = QDir::currentPath() + "/config.ini";
+    AppConfigManager::init(configPath);
+    const AppConfig& config = AppConfigManager::get();
 
     qDebug() << "配置文件路径:" << configPath;
     qDebug() << "数据目录:" << config.dataDir;
@@ -132,7 +109,16 @@ int main(int argc, char *argv[]) {
 
     checkAndImportData(dbm, config);
 
-    TrafficAnalysisSystem window(&dbm);
+    if (!DataManager::loadFromDatabase(dbm)) {
+        qDebug() << "从数据库加载点到内存失败";
+        return -1;
+    }
+
+    qDebug() << "加载到内存的点数量:" << DataManager::getAllPoints().size();
+
+    DataManager::buildQuadTree(config, 1000);
+
+    TrafficAnalysisSystem window;
     window.show();
 
     return app.exec();

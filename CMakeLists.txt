@@ -16,7 +16,6 @@ if(NOT Qt6_FOUND)
     find_package(Qt5 5.15 COMPONENTS Core Gui Widgets Sql WebEngineWidgets  REQUIRED)
 endif()
 
-
 # 3. 包含头文件目录
 # 这样你在写代码时可以直接 #include "databasemanager.h" 而不用写长路径
 include_directories(include)

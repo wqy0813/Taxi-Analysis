@@ -33,7 +33,6 @@ public:
     // 四个子节点指针
     QuadNode *nw, *ne, *sw, *se;
     bool divided;           // 标记是否已经分裂
-
     QuadNode(Rect b, int cap = 500);
     ~QuadNode();
 
