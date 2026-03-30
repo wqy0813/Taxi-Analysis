@@ -1,4 +1,6 @@
 #include "databasemanager.h"
+#include <QDir>
+#include <QFileInfo>
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QDebug>
@@ -15,6 +17,13 @@ DatabaseManager::~DatabaseManager() {
 }
 
 bool DatabaseManager::open() {
+    const QFileInfo dbInfo(db.databaseName());
+    const QString dbDirPath = dbInfo.absolutePath();
+    if (!dbDirPath.isEmpty() && !QDir(dbDirPath).exists() && !QDir().mkpath(dbDirPath)) {
+        qDebug() << "Database directory creation failed:" << dbDirPath;
+        return false;
+    }
+
     if (!db.open()) {
         qDebug() << "数据库打开失败:" << db.lastError().text();
         return false;
