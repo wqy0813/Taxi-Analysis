@@ -1,14 +1,31 @@
 #include "appconfig.h"
+#include <QDir>
+#include <QFileInfo>
 #include <QSettings>
 
 AppConfig AppConfig::load(const QString& configPath) {
     QSettings settings(configPath, QSettings::IniFormat);
+    const QFileInfo configInfo(configPath);
+    const QDir configDir = configInfo.dir();
+
+    const auto resolvePath = [&configDir](const QString& path) {
+        if (path.isEmpty()) {
+            return path;
+        }
+
+        const QFileInfo fileInfo(path);
+        if (fileInfo.isAbsolute()) {
+            return QDir::cleanPath(fileInfo.absoluteFilePath());
+        }
+
+        return QDir::cleanPath(configDir.absoluteFilePath(path));
+    };
 
     AppConfig cfg;
 
-    cfg.dataDir = settings.value("Paths/data_dir", "./data").toString();
-    cfg.dbPath = settings.value("Paths/db_path", "./taxi_data.db").toString();
-    cfg.mapPath=settings.value("Paths/map_path", "./map.html").toString();
+    cfg.dataDir = resolvePath(settings.value("Paths/data_dir", "./data").toString());
+    cfg.dbPath = resolvePath(settings.value("Paths/db_path", "./taxi_data.db").toString());
+    cfg.mapPath = resolvePath(settings.value("Paths/map_path", "./map.html").toString());
 
     cfg.minLon = settings.value("Filter/min_lon", 115.0).toDouble();
     cfg.maxLon = settings.value("Filter/max_lon", 118.0).toDouble();

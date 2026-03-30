@@ -110,6 +110,10 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
 
     QString configPath = QDir::currentPath() + "/config.ini";
+    if (!QFileInfo::exists(configPath)) {
+        qDebug() << "未找到配置文件，将使用默认配置";
+        configPath = findConfigPath();
+    }
     AppConfigManager::init(configPath);
     const AppConfig& config = AppConfigManager::get();
 
