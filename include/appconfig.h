@@ -20,7 +20,7 @@ struct AppConfig {
     int mapInitialZoom;
     int mapMinZoom;
     int mapMaxZoom;
-
+    int rectCapacity;
     static AppConfig load(const QString& configPath);
 };
 class AppConfigManager {

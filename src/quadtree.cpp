@@ -58,7 +58,6 @@ bool QuadNode::insert(int pointIdx, const std::vector<GPSPoint>& allData) {
 
     return false;
 }
-
 void QuadNode::query(const Rect& range, std::vector<int>& found,
                      const std::vector<GPSPoint>& allData) {
     if (!boundary.intersects(range)) {
