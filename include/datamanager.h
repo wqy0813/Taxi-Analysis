@@ -7,8 +7,8 @@
 #include "appconfig.h"
 #include "quadtree.h"
 #include<set>
-class DatabaseManager;
 
+class DatabaseManager;
 struct GPSPoint {
     int id;
     long long timestamp;
@@ -29,10 +29,14 @@ public:
     static bool hasQuadTree();
 
     // 新增：区域查询，返回命中的点
-    static std::vector<GPSPoint> queryRange(double minLon, double minLat,
+    static std::vector<GPSPoint> querySpatial(double minLon, double minLat,
                                             double maxLon, double maxLat);
-
+    static std::vector<GPSPoint> querySpatialAndTime(double minLon, double minLat,
+                                              double maxLon, double maxLat,long long minTimeStamp,long long maxTimeStamp);
+    static std::unordered_set<int> querySpatioTemporalUniqueIds(double minLon, double minLat,
+                                                     double maxLon, double maxLat,long long minTimeStamp,long long maxTimeStamp);
     static std::set<const QuadNode*> exceptionalNodes;
+    static int getUniqueCountById(const std::vector<GPSPoint>& points);
 private:
 
     static std::vector<GPSPoint> allPoints;

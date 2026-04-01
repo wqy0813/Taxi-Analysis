@@ -40,7 +40,7 @@ AppConfig AppConfig::load(const QString& configPath) {
     cfg.mapMinZoom = settings.value("Map/min_zoom", 8).toInt();
     cfg.mapMaxZoom = settings.value("Map/max_zoom", 18).toInt();
 
-    cfg.rectCapacity=settings.value("Data/rect_capacity", 500).toInt();
+    cfg.rectCapacity=settings.value("QuadTree/rect_capacity", 500).toInt();
     cfg.maxQuadTreeDepth = settings.value("QuadTree/max_depth", 64).toInt();
     cfg.minQuadCellSize = settings.value("QuadTree/min_cell_size", 1e-7).toDouble();
     return cfg;

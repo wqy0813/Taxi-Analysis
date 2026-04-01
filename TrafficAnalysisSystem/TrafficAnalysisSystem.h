@@ -20,7 +20,7 @@
 #include <vector>
 #include "databasemanager.h"
 #include "datamanager.h"
-
+#include "utils.h"
 class RegionSearchDialog : public QDialog
 {
     Q_OBJECT

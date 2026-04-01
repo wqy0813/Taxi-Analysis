@@ -30,7 +30,7 @@ public:
                           double &minLat,
                           double &maxLon,
                           double &maxLat);
-
+    static void checkAndImportData(DatabaseManager &dbm, const AppConfig& config);
 
 private:
     QSqlDatabase db;

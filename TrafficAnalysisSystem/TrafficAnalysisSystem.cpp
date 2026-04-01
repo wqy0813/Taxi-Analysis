@@ -12,6 +12,7 @@
 #include <QUrl>
 #include <QVariant>
 #include <QVBoxLayout>
+#include <vector>
 #include <QWebEngineSettings>
 #include "appconfig.h"
 
@@ -418,35 +419,10 @@ void TrafficAnalysisSystem::onRegionSearch()
 
     qint64 datasetMinTime = defaultMinTime;
     qint64 datasetMaxTime = defaultMaxTime;
-    double datasetMinLon = 115.9;
-    double datasetMinLat = 39.7;
-    double datasetMaxLon = 116.6;
-    double datasetMaxLat = 40.1;
-
-    qint64 dbMinTime = 0;
-    qint64 dbMaxTime = 0;
-    double dbMinLon = datasetMinLon;
-    double dbMinLat = datasetMinLat;
-    double dbMaxLon = datasetMaxLon;
-    double dbMaxLat = datasetMaxLat;
-
-    if (dbManager->getDatasetBounds(dbMinTime, dbMaxTime,
-                                    dbMinLon, dbMinLat,
-                                    dbMaxLon, dbMaxLat)) {
-        const QDateTime dbMinDateTime = QDateTime::fromSecsSinceEpoch(dbMinTime);
-        const QDateTime dbMaxDateTime = QDateTime::fromSecsSinceEpoch(dbMaxTime);
-        if (dbMinDateTime.isValid() && dbMaxDateTime.isValid() &&
-            dbMinDateTime.date().year() >= 2000 && dbMaxDateTime.date().year() <= 2100 &&
-            dbMinTime <= dbMaxTime) {
-            datasetMinTime = dbMinTime;
-            datasetMaxTime = dbMaxTime;
-        }
-
-        datasetMinLon = dbMinLon;
-        datasetMinLat = dbMinLat;
-        datasetMaxLon = dbMaxLon;
-        datasetMaxLat = dbMaxLat;
-    }
+    double datasetMinLon = 115.0;
+    double datasetMinLat = 39.0;
+    double datasetMaxLon = 118.0;
+    double datasetMaxLat = 41.0;
 
     RegionSearchDialog dialog(QDateTime::fromSecsSinceEpoch(datasetMinTime),
                               QDateTime::fromSecsSinceEpoch(datasetMaxTime),
@@ -456,14 +432,8 @@ void TrafficAnalysisSystem::onRegionSearch()
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
+    SimpleTimer timer=SimpleTimer("区域查询",true);
 
-    const QDateTime startDt = dialog.startTime();
-    const QDateTime endDt = dialog.endTime();
-    if (!startDt.isValid() || !endDt.isValid() || startDt > endDt) {
-        QMessageBox::warning(this, QStringLiteral("区域查找"),
-                             QStringLiteral("开始时间不能晚于结束时间。"));
-        return;
-    }
 
     const double minLon = dialog.minLon();
     const double minLat = dialog.minLat();
@@ -474,9 +444,10 @@ void TrafficAnalysisSystem::onRegionSearch()
                              QStringLiteral("矩形范围错误，请确保左上角和右下角坐标有效。"));
         return;
     }
-
-    const qint64 startTime = startDt.toSecsSinceEpoch();
-    const qint64 endTime = endDt.toSecsSinceEpoch();
+    const QDateTime startDt = dialog.startTime();
+    const QDateTime endDt = dialog.endTime();
+    const long long startTime = startDt.toSecsSinceEpoch();
+    const long long endTime = endDt.toSecsSinceEpoch();
 
     qint64 count = 0;
     if (hasCachedRegionQuery &&
@@ -488,8 +459,10 @@ void TrafficAnalysisSystem::onRegionSearch()
         cachedRegionMaxLat == maxLat) {
         count = cachedRegionResult;
     } else {
-        count = dbManager->countUniqueTaxisInBoundsAndTime(
-            startTime, endTime, minLon, minLat, maxLon, maxLat);
+        std::vector<GPSPoint> points= DataManager::querySpatialAndTime(minLon, minLat, maxLon, maxLat,startTime,endTime);
+        timer.print("命中结果");
+        count=DataManager::getUniqueCountById(points);
+        timer.print("id去重");
         if (count >= 0) {
             hasCachedRegionQuery = true;
             cachedRegionStartTime = startTime;
@@ -501,7 +474,7 @@ void TrafficAnalysisSystem::onRegionSearch()
             cachedRegionResult = count;
         }
     }
-
+    timer.stop();
     if (count < 0) {
         QMessageBox::warning(this, QStringLiteral("区域查找"),
                              QStringLiteral("查询失败。"));

@@ -6,7 +6,7 @@
 #include <QTextStream>
 #include <QDateTime>
 #include <QDebug>
-
+#include <unordered_set>
 std::vector<GPSPoint> DataManager::allPoints;
 std::unique_ptr<QuadNode> DataManager::quadTreeRoot = nullptr;
 std::set<const QuadNode*> DataManager::exceptionalNodes;
@@ -134,6 +134,9 @@ void DataManager::buildQuadTree(const AppConfig& config) {
         }
     }
 
+    std::unordered_set<int> indexedDepths = {1,2, 3, 5};
+    quadTreeRoot->buildSortedIndexForDepths(indexedDepths, allPoints);
+
     qDebug() << "四叉树建立完成，成功插入:" << insertedCount
              << "失败:" << failedCount;
     qDebug() << "异常节点数量:" << exceptionalNodes.size();
@@ -155,7 +158,7 @@ bool DataManager::hasQuadTree() {
     return quadTreeRoot != nullptr;
 }
 
-std::vector<GPSPoint> DataManager::queryRange(double minLon, double minLat,
+std::vector<GPSPoint> DataManager::querySpatial(double minLon, double minLat,
                                               double maxLon, double maxLat) {
     std::vector<GPSPoint> result;
 
@@ -171,7 +174,7 @@ std::vector<GPSPoint> DataManager::queryRange(double minLon, double minLat,
     range.h = (maxLat - minLat) / 2.0;
 
     std::vector<int> foundIndexes;
-    quadTreeRoot->query(range, foundIndexes, allPoints);
+    quadTreeRoot->querySpatial(range, foundIndexes, allPoints);
 
     result.reserve(foundIndexes.size());
     for (int idx : foundIndexes) {
@@ -182,4 +185,66 @@ std::vector<GPSPoint> DataManager::queryRange(double minLon, double minLat,
 
     qDebug() << "queryRange: 命中点数 =" << result.size();
     return result;
+}
+std::vector<GPSPoint> DataManager::querySpatialAndTime(double minLon, double minLat,
+                                                       double maxLon, double maxLat,long long minTimeStamp,long long maxTimeStamp){
+
+    std::vector<GPSPoint> result;
+
+    if (!quadTreeRoot) {
+        qDebug() << "queryRange: 四叉树尚未建立";
+        return result;
+    }
+
+    Rect range;
+    range.x = (minLon + maxLon) / 2.0;
+    range.y = (minLat + maxLat) / 2.0;
+    range.w = (maxLon - minLon) / 2.0;
+    range.h = (maxLat - minLat) / 2.0;
+
+    std::vector<int> foundIndexes;
+    quadTreeRoot->querySpatioTemporal(range,minTimeStamp,maxTimeStamp, foundIndexes, allPoints);
+
+    result.reserve(foundIndexes.size());
+    for (int idx : foundIndexes) {
+        if (idx >= 0 && idx < static_cast<int>(allPoints.size())) {
+            result.push_back(allPoints[idx]);
+        }
+    }
+
+    qDebug() << "queryRange: 命中点数 =" << result.size();
+    return result;
+}
+std::unordered_set<int> DataManager::querySpatioTemporalUniqueIds(double minLon, double minLat,
+                                                       double maxLon, double maxLat,long long minTimeStamp,long long maxTimeStamp){
+    std::unordered_set<int>  foundIndexes;
+    if (!quadTreeRoot) {
+        qDebug() << "queryRange: 四叉树尚未建立";
+        return foundIndexes;
+    }
+
+    Rect range;
+    range.x = (minLon + maxLon) / 2.0;
+    range.y = (minLat + maxLat) / 2.0;
+    range.w = (maxLon - minLon) / 2.0;
+    range.h = (maxLat - minLat) / 2.0;
+
+
+    quadTreeRoot->querySpatioTemporalUniqueIds(range,minTimeStamp,maxTimeStamp, foundIndexes, allPoints);
+    return foundIndexes;
+}
+int DataManager::getUniqueCountById(const std::vector<GPSPoint>& points)
+{
+    int maxId=11000;
+    std::vector<bool> seen(maxId + 1, false);
+    int count = 0;
+
+    for (const auto& p : points) {
+        if (!seen[p.id]) {
+            seen[p.id] = true;
+            ++count;
+        }
+    }
+
+    return count;
 }
