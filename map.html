@@ -483,19 +483,19 @@
         fitViewToPoints(demoPath);
     }
 	function getViewBoundsJson() {
-		if (!map) return null;
+	if (!map) return "";
 
-		var bounds = map.getBounds();
-		var sw = bounds.getSouthWest();
-		var ne = bounds.getNorthEast();
+	var bounds = map.getBounds();
+	var sw = bounds.getSouthWest();
+	var ne = bounds.getNorthEast();
 
-		return {
-			minLon: sw.lng,
-			minLat: sw.lat,
-			maxLon: ne.lng,
-			maxLat: ne.lat
-		};
-	}
+	return JSON.stringify({
+		minLon: sw.lng,
+		minLat: sw.lat,
+		maxLon: ne.lng,
+		maxLat: ne.lat
+	});
+}
 	function getCurrentZoomLevel() {
 		if (!map) return -1;
 		return map.getZoom();

@@ -78,7 +78,7 @@ private:
     void loadMap();
     void runJs(const QString& jsCode);
     void showTaxiTrajectory(int taxiId);
-    void showAllTaxiPoints();
+    void showAllTaxiPoints(double minLon,double minlat ,double maxLon,double maxlat);
 
     std::vector<GPSPoint> samplePoints(const std::vector<GPSPoint>& points, size_t maxPoints) const;
     QString pointsToJsArray(const std::vector<GPSPoint>& points, size_t maxPoints) const;

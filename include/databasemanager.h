@@ -15,7 +15,6 @@ public:
     bool open();
     bool batchInsert(const std::vector<GPSPoint>& points);
     qint64 getPointCount();
-    bool loadAllPoints(std::vector<GPSPoint>& points);
     std::vector<GPSPoint> getTrajectoryByTaxiId(int taxiId);
     std::vector<GPSPoint> getAllPointsForDisplay(int maxPoints);
     qint64 countUniqueTaxisInBoundsAndTime(qint64 startTime,
@@ -31,7 +30,7 @@ public:
                           double &maxLon,
                           double &maxLat);
     static void checkAndImportData(DatabaseManager &dbm, const AppConfig& config);
-
+    QSqlDatabase getQSqlDatabase();
 private:
     QSqlDatabase db;
     QString connectionName;

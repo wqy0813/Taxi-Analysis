@@ -4,6 +4,7 @@
 #include <QString>
 #include <vector>
 #include <memory>
+#include<unordered_map>
 #include "appconfig.h"
 #include "quadtree.h"
 #include<set>
@@ -15,13 +16,17 @@ struct GPSPoint {
     double lon;
     double lat;
 };
-
+struct VehicleRange {
+    int start;
+    int end;
+};
 class DataManager {
 public:
     static void loadTxtFiles(const AppConfig& config);
     static bool loadFromDatabase(DatabaseManager& dbm);
-
+    static bool loadAllPoints(DatabaseManager& dbm);
     static const std::vector<GPSPoint>& getAllPoints() { return allPoints; }
+
     // 新增：建立四叉树
     static void buildQuadTree(const AppConfig& config);
 
@@ -37,8 +42,9 @@ public:
                                                      double maxLon, double maxLat,long long minTimeStamp,long long maxTimeStamp);
     static std::set<const QuadNode*> exceptionalNodes;
     static int getUniqueCountById(const std::vector<GPSPoint>& points);
+    static std::vector<GPSPoint> getPointsRangeById(int id);
 private:
-
+    static std::unordered_map<int,VehicleRange> idToRange;
     static std::vector<GPSPoint> allPoints;
     static std::unique_ptr<QuadNode> quadTreeRoot;
 };

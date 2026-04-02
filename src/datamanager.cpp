@@ -7,14 +7,98 @@
 #include <QDateTime>
 #include <QDebug>
 #include <unordered_set>
+#include <QSqlError>
+#include <QSqlQuery>
 std::vector<GPSPoint> DataManager::allPoints;
+std::unordered_map<int,VehicleRange> DataManager::idToRange;
 std::unique_ptr<QuadNode> DataManager::quadTreeRoot = nullptr;
 std::set<const QuadNode*> DataManager::exceptionalNodes;
+bool DataManager::loadAllPoints(DatabaseManager& dbm) {
+    allPoints.clear();
+    idToRange.clear();
+
+    QSqlDatabase db = dbm.getQSqlDatabase();
+    if (!db.isOpen()) {
+        qDebug() << "数据库未打开，无法加载点数据";
+        return false;
+    }
+
+    qint64 totalCount = dbm.getPointCount();
+    if (totalCount <= 0) {
+        qDebug() << "数据库中没有点数据";
+        return true;
+    }
+
+    // 预分配，减少 vector 扩容次数
+    allPoints.reserve(static_cast<size_t>(totalCount));
+
+    QSqlQuery query(db);
+    query.setForwardOnly(true);  // 大数据量时更省内存
+
+    const QString sql = R"(
+        SELECT id, time, lon, lat
+        FROM taxi_points
+        ORDER BY id ASC, time ASC
+    )";
+
+    if (!query.exec(sql)) {
+        qDebug() << "读取点数据失败:" << query.lastError().text();
+        return false;
+    }
+
+    qint64 loadedCount = 0;
+
+    int currentId = -1;
+    int rangeStart = -1;
+
+    while (query.next()) {
+        GPSPoint p;
+        p.id = query.value(0).toInt();
+        p.timestamp = query.value(1).toLongLong();
+        p.lon = query.value(2).toDouble();
+        p.lat = query.value(3).toDouble();
+
+        // 当前点将要插入的位置
+        int currentIndex = static_cast<int>(allPoints.size());
+
+        // 如果遇到新的 id，先把上一个 id 的区间收尾
+        if (currentId != -1 && p.id != currentId) {
+            idToRange[currentId] = {rangeStart, currentIndex - 1};
+            rangeStart = currentIndex;
+        }
+
+        // 第一个点初始化
+        if (currentId == -1) {
+            currentId = p.id;
+            rangeStart = currentIndex;
+        } else if (p.id != currentId) {
+            currentId = p.id;
+        }
+
+        allPoints.push_back(p);
+        ++loadedCount;
+
+        if (loadedCount % 1000000 == 0) {
+            qDebug() << "已加载" << loadedCount << "个点到内存...";
+        }
+    }
+
+    // 最后一个 id 的区间别忘了收尾
+    if (!allPoints.empty() && currentId != -1) {
+        idToRange[currentId] = {rangeStart, static_cast<int>(allPoints.size()) - 1};
+    }
+
+    qDebug() << "全部点加载完成，共" << loadedCount << "个点";
+    qDebug() << "当前 allPoints 已按 id 递增、time 递增排列";
+    qDebug() << "共建立" << idToRange.size() << "个车辆区间映射";
+
+    return true;
+}
 bool DataManager::loadFromDatabase(DatabaseManager& dbm) {
     allPoints.clear();
     exceptionalNodes.clear();
     quadTreeRoot.reset();   // 数据重载时，旧树作废
-    return dbm.loadAllPoints(allPoints);
+    return loadAllPoints(dbm);
 }
 
 void DataManager::loadTxtFiles(const AppConfig& config) {
@@ -157,7 +241,25 @@ void DataManager::buildQuadTree(const AppConfig& config) {
 bool DataManager::hasQuadTree() {
     return quadTreeRoot != nullptr;
 }
+std::vector<GPSPoint> DataManager::getPointsRangeById(int id) {
+    std::vector<GPSPoint> result;
 
+    auto it = idToRange.find(id);
+    if (it == idToRange.end()) {
+        return result;  // 没找到，返回空
+    }
+
+    const VehicleRange& range = it->second;
+
+    // 预分配，避免多次扩容
+    result.reserve(range.end - range.start + 1);
+
+    for (int i = range.start; i <= range.end; ++i) {
+        result.push_back(allPoints[i]);
+    }
+
+    return result;
+}
 std::vector<GPSPoint> DataManager::querySpatial(double minLon, double minLat,
                                               double maxLon, double maxLat) {
     std::vector<GPSPoint> result;

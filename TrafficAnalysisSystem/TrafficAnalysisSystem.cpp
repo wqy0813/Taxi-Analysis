@@ -306,7 +306,7 @@ void TrafficAnalysisSystem::requestViewBounds(std::function<void(double, double,
         );
 }
 
-QString TrafficAnalysisSystem::pointsToJsArray(const std::vector<GPSPoint>& points, size_t maxPoints) const
+QString TrafficAnalysisSystem::pointsToJsArray(const std::vector<GPSPoint>& points, size_t maxPoints=INT_MAX) const
 {
     const std::vector<GPSPoint> sampled = samplePoints(points, maxPoints);
 
@@ -377,7 +377,7 @@ void TrafficAnalysisSystem::fitViewToBounds(double minLon, double minLat, double
     boundsPoints.push_back({0, 0, maxLon, maxLat});
     fitViewToPoints(boundsPoints);
 }
-
+//Todo:展示出租车轨迹
 void TrafficAnalysisSystem::onQueryTrajectory()
 {
     bool ok = false;
@@ -397,10 +397,11 @@ void TrafficAnalysisSystem::onQueryTrajectory()
     }
 
     if (taxiId == 0) {
-        showAllTaxiPoints();
+        this->requestViewBounds([this](double a, double b, double c, double d) {
+    this->showAllTaxiPoints(a, b, c, d);
+        });
         return;
     }
-
     showTaxiTrajectory(taxiId);
 }
 
@@ -557,7 +558,9 @@ void TrafficAnalysisSystem::showTaxiTrajectory(int taxiId)
     if (cachedTaxiId == taxiId && !cachedTrajectory.empty()) {
         trajectory = &cachedTrajectory;
     } else {
-        cachedTrajectory = dbManager->getTrajectoryByTaxiId(taxiId);
+        SimpleTimer timer("id查询",true);
+        cachedTrajectory = DataManager::getPointsRangeById(taxiId);
+        timer.stop();
         cachedTaxiId = taxiId;
         trajectory = &cachedTrajectory;
     }
@@ -576,8 +579,9 @@ void TrafficAnalysisSystem::showTaxiTrajectory(int taxiId)
              << ", pointCount =" << trajectory->size();
 }
 
-void TrafficAnalysisSystem::showAllTaxiPoints()
+void TrafficAnalysisSystem::showAllTaxiPoints(double minLon,double minlat ,double maxLon,double maxlat)
 {
+    qDebug()<<minLon<<","<<minlat<<"-"<<maxLon<<","<<maxlat;
     if (!dbManager) {
         QMessageBox::warning(this, QStringLiteral("轨迹查询"),
                              QStringLiteral("数据库管理器未初始化。"));
@@ -585,12 +589,8 @@ void TrafficAnalysisSystem::showAllTaxiPoints()
     }
 
     const std::vector<GPSPoint>* points = nullptr;
-    if (!cachedAllPoints.empty()) {
-        points = &cachedAllPoints;
-    } else {
-        cachedAllPoints = dbManager->getAllPointsForDisplay(800);
-        points = &cachedAllPoints;
-    }
+    cachedAllPoints = DataManager::querySpatial( minLon, minlat , maxLon, maxlat);
+    points = &cachedAllPoints;
 
     if (points->empty()) {
         QMessageBox::information(this, QStringLiteral("轨迹查询"),
@@ -599,9 +599,7 @@ void TrafficAnalysisSystem::showAllTaxiPoints()
     }
 
     clearMap();
-    const QString arr = pointsToJsArray(*points, 800);
+    const QString arr = pointsToJsArray(*points);
     runJs("setAllTaxiPoints(" + arr + ");");
-    fitViewToPoints(*points);
-
     qDebug() << "F1 all taxi points display completed. sampledPointCount =" << points->size();
 }
