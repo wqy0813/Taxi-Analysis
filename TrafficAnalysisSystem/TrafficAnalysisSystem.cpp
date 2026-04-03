@@ -2,7 +2,6 @@
 
 #include <QDateTime>
 #include <QDebug>
-#include <QDir>
 #include <QFileInfo>
 #include <QInputDialog>
 #include <QJsonDocument>
@@ -11,8 +10,11 @@
 #include <QPushButton>
 #include <QUrl>
 #include <QVariant>
-#include <QVBoxLayout>
+
+#include <climits>
+#include <cmath>
 #include <vector>
+
 #include <QWebEngineSettings>
 #include "appconfig.h"
 
@@ -95,35 +97,12 @@ RegionSearchDialog::RegionSearchDialog(const QDateTime &startTime,
     layout->addWidget(buttonBox);
 }
 
-QDateTime RegionSearchDialog::startTime() const
-{
-    return startTimeEdit->dateTime();
-}
-
-QDateTime RegionSearchDialog::endTime() const
-{
-    return endTimeEdit->dateTime();
-}
-
-double RegionSearchDialog::minLon() const
-{
-    return minLonEdit->value();
-}
-
-double RegionSearchDialog::minLat() const
-{
-    return minLatEdit->value();
-}
-
-double RegionSearchDialog::maxLon() const
-{
-    return maxLonEdit->value();
-}
-
-double RegionSearchDialog::maxLat() const
-{
-    return maxLatEdit->value();
-}
+QDateTime RegionSearchDialog::startTime() const { return startTimeEdit->dateTime(); }
+QDateTime RegionSearchDialog::endTime() const { return endTimeEdit->dateTime(); }
+double RegionSearchDialog::minLon() const { return minLonEdit->value(); }
+double RegionSearchDialog::minLat() const { return minLatEdit->value(); }
+double RegionSearchDialog::maxLon() const { return maxLonEdit->value(); }
+double RegionSearchDialog::maxLat() const { return maxLatEdit->value(); }
 
 TrafficAnalysisSystem::TrafficAnalysisSystem(DatabaseManager *dbManager, QWidget *parent)
     : QMainWindow(parent),
@@ -148,7 +127,15 @@ TrafficAnalysisSystem::TrafficAnalysisSystem(DatabaseManager *dbManager, QWidget
     cachedRegionMinLat(0.0),
     cachedRegionMaxLon(0.0),
     cachedRegionMaxLat(0.0),
-    cachedRegionResult(0)
+    cachedRegionResult(0),
+    allTaxiModeActive(false),
+    viewportSyncTimer(new QTimer(this)),
+    hasLastViewportState(false),
+    lastViewportMinLon(0.0),
+    lastViewportMinLat(0.0),
+    lastViewportMaxLon(0.0),
+    lastViewportMaxLat(0.0),
+    lastViewportZoom(-1)
 {
     setWindowTitle(QStringLiteral("交通分析系统"));
     resize(1400, 800);
@@ -206,6 +193,34 @@ TrafficAnalysisSystem::TrafficAnalysisSystem(DatabaseManager *dbManager, QWidget
     connect(btn5, &QPushButton::clicked, this, &TrafficAnalysisSystem::onFrequentPath);
     connect(btn6, &QPushButton::clicked, this, &TrafficAnalysisSystem::onTravelTimeAnalysis);
 
+    viewportSyncTimer->setInterval(250);
+    connect(viewportSyncTimer, &QTimer::timeout, this, [this]() {
+        if (!allTaxiModeActive) {
+            return;
+        }
+
+        requestViewState([this](double minLon, double minLat, double maxLon, double maxLat, int zoom) {
+            const auto changed = [this, minLon, minLat, maxLon, maxLat, zoom]() {
+                if (!hasLastViewportState) {
+                    return true;
+                }
+
+                const double eps = 1e-6;
+                return std::fabs(lastViewportMinLon - minLon) > eps ||
+                       std::fabs(lastViewportMinLat - minLat) > eps ||
+                       std::fabs(lastViewportMaxLon - maxLon) > eps ||
+                       std::fabs(lastViewportMaxLat - maxLat) > eps ||
+                       lastViewportZoom != zoom;
+            };
+
+            if (!changed()) {
+                return;
+            }
+
+            showAllTaxiPoints(minLon, minLat, maxLon, maxLat, zoom);
+        });
+    });
+
     loadMap();
 }
 
@@ -213,9 +228,7 @@ TrafficAnalysisSystem::~TrafficAnalysisSystem() = default;
 
 void TrafficAnalysisSystem::loadMap()
 {
-    const QString configPath = QDir::currentPath() + "/config.ini";
-    const AppConfig config = AppConfig::load(configPath);
-
+    const AppConfig& config = AppConfigManager::get();
     const QString htmlPath = config.mapPath;
     QFileInfo fileInfo(htmlPath);
 
@@ -306,7 +319,45 @@ void TrafficAnalysisSystem::requestViewBounds(std::function<void(double, double,
         );
 }
 
-QString TrafficAnalysisSystem::pointsToJsArray(const std::vector<GPSPoint>& points, size_t maxPoints=INT_MAX) const
+void TrafficAnalysisSystem::requestViewState(std::function<void(double, double, double, double, int)> callback)
+{
+    if (!webView || !webView->page()) {
+        qDebug() << "Web page is not initialized.";
+        return;
+    }
+
+    if (!mapReady) {
+        qDebug() << "Map page is not ready.";
+        return;
+    }
+
+    webView->page()->runJavaScript(
+        "getViewStateJson();",
+        [callback](const QVariant &result)
+        {
+            const QString json = result.toString();
+            if (json.isEmpty()) {
+                qDebug() << "No map view state was returned.";
+                return;
+            }
+
+            const QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8());
+            if (!doc.isObject()) {
+                qDebug() << "Failed to parse map view state JSON.";
+                return;
+            }
+
+            const QJsonObject obj = doc.object();
+            callback(obj.value("minLon").toDouble(),
+                     obj.value("minLat").toDouble(),
+                     obj.value("maxLon").toDouble(),
+                     obj.value("maxLat").toDouble(),
+                     obj.value("zoom").toInt(-1));
+        }
+        );
+}
+
+QString TrafficAnalysisSystem::pointsToJsArray(const std::vector<GPSPoint>& points, size_t maxPoints) const
 {
     const std::vector<GPSPoint> sampled = samplePoints(points, maxPoints);
 
@@ -322,6 +373,35 @@ QString TrafficAnalysisSystem::pointsToJsArray(const std::vector<GPSPoint>& poin
     return "[" + items.join(",") + "]";
 }
 
+QString TrafficAnalysisSystem::clusterPointsToJsArray(const std::vector<ClusterPoint>& points) const
+{
+    QStringList items;
+    items.reserve(static_cast<int>(points.size()));
+
+    for (const auto& p : points) {
+        QStringList childItems;
+        childItems.reserve(static_cast<int>(p.children.size()));
+
+        for (const auto& child : p.children) {
+            childItems << QString("{lng:%1,lat:%2}")
+            .arg(child.lon, 0, 'f', 8)
+                .arg(child.lat, 0, 'f', 8);
+        }
+
+        items << QString("{lng:%1,lat:%2,count:%3,isCluster:%4,minLon:%5,minLat:%6,maxLon:%7,maxLat:%8,children:[%9]}")
+                     .arg(p.lon, 0, 'f', 8)
+                     .arg(p.lat, 0, 'f', 8)
+                     .arg(p.count)
+                     .arg(p.isCluster ? "true" : "false")
+                     .arg(p.minLon, 0, 'f', 8)
+                     .arg(p.minLat, 0, 'f', 8)
+                     .arg(p.maxLon, 0, 'f', 8)
+                     .arg(p.maxLat, 0, 'f', 8)
+                     .arg(childItems.join(","));
+    }
+
+    return "[" + items.join(",") + "]";
+}
 void TrafficAnalysisSystem::clearMap()
 {
     runJs("clearMap();");
@@ -359,6 +439,12 @@ void TrafficAnalysisSystem::showPoints(const std::vector<GPSPoint>& points)
     runJs("addPoints(" + arr + ");");
 }
 
+void TrafficAnalysisSystem::showClusteredPoints(const std::vector<ClusterPoint>& points)
+{
+    const QString arr = clusterPointsToJsArray(points);
+    runJs("setClusterPoints(" + arr + ");");
+}
+
 void TrafficAnalysisSystem::fitViewToPoints(const std::vector<GPSPoint>& points)
 {
     if (points.empty()) {
@@ -377,7 +463,7 @@ void TrafficAnalysisSystem::fitViewToBounds(double minLon, double minLat, double
     boundsPoints.push_back({0, 0, maxLon, maxLat});
     fitViewToPoints(boundsPoints);
 }
-//Todo:展示出租车轨迹
+
 void TrafficAnalysisSystem::onQueryTrajectory()
 {
     bool ok = false;
@@ -397,11 +483,18 @@ void TrafficAnalysisSystem::onQueryTrajectory()
     }
 
     if (taxiId == 0) {
-        this->requestViewBounds([this](double a, double b, double c, double d) {
-    this->showAllTaxiPoints(a, b, c, d);
+        allTaxiModeActive = true;
+        hasLastViewportState = false;
+        viewportSyncTimer->start();
+
+        requestViewState([this](double minLon, double minLat, double maxLon, double maxLat, int zoom) {
+            showAllTaxiPoints(minLon, minLat, maxLon, maxLat, zoom);
         });
         return;
     }
+
+    allTaxiModeActive = false;
+    viewportSyncTimer->stop();
     showTaxiTrajectory(taxiId);
 }
 
@@ -433,18 +526,23 @@ void TrafficAnalysisSystem::onRegionSearch()
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
-    SimpleTimer timer=SimpleTimer("区域查询",true);
 
+    allTaxiModeActive = false;
+    viewportSyncTimer->stop();
+
+    SimpleTimer timer = SimpleTimer("区域查询", true);
 
     const double minLon = dialog.minLon();
     const double minLat = dialog.minLat();
     const double maxLon = dialog.maxLon();
     const double maxLat = dialog.maxLat();
+
     if (minLon >= maxLon || minLat >= maxLat) {
         QMessageBox::warning(this, QStringLiteral("区域查找"),
                              QStringLiteral("矩形范围错误，请确保左上角和右下角坐标有效。"));
         return;
     }
+
     const QDateTime startDt = dialog.startTime();
     const QDateTime endDt = dialog.endTime();
     const long long startTime = startDt.toSecsSinceEpoch();
@@ -460,10 +558,12 @@ void TrafficAnalysisSystem::onRegionSearch()
         cachedRegionMaxLat == maxLat) {
         count = cachedRegionResult;
     } else {
-        std::vector<GPSPoint> points= DataManager::querySpatialAndTime(minLon, minLat, maxLon, maxLat,startTime,endTime);
+        std::vector<GPSPoint> points = DataManager::querySpatialAndTime(minLon, minLat, maxLon, maxLat,
+                                                                        startTime, endTime);
         timer.print("命中结果");
-        count=DataManager::getUniqueCountById(points);
+        count = DataManager::getUniqueCountById(points);
         timer.print("id去重");
+
         if (count >= 0) {
             hasCachedRegionQuery = true;
             cachedRegionStartTime = startTime;
@@ -475,7 +575,9 @@ void TrafficAnalysisSystem::onRegionSearch()
             cachedRegionResult = count;
         }
     }
+
     timer.stop();
+
     if (count < 0) {
         QMessageBox::warning(this, QStringLiteral("区域查找"),
                              QStringLiteral("查询失败。"));
@@ -495,19 +597,16 @@ void TrafficAnalysisSystem::onRegionSearch()
 
 void TrafficAnalysisSystem::onVehicleDensity()
 {
-    std::vector<GPSPoint> demo;
-    demo.push_back({1, 0, 116.40400000, 39.91500000});
-    demo.push_back({2, 0, 116.40600000, 39.91700000});
-    demo.push_back({3, 0, 116.40900000, 39.92000000});
-    demo.push_back({4, 0, 116.41300000, 39.91800000});
-    demo.push_back({5, 0, 116.41700000, 39.92300000});
-
-    showPoints(demo);
-    fitViewToPoints(demo);
+    QMessageBox::information(this,
+                             QStringLiteral("提示"),
+                             QStringLiteral("当前“车辆密度”已改为后端聚合模式。\n请在“查询轨迹”中输入 0 查看全部出租车聚合结果。"));
 }
 
 void TrafficAnalysisSystem::onRegionCorrelation()
 {
+    allTaxiModeActive = false;
+    viewportSyncTimer->stop();
+
     showRect(116.00, 39.80, 116.20, 39.95);
     showRect(116.15, 39.90, 116.35, 40.05);
 
@@ -519,6 +618,9 @@ void TrafficAnalysisSystem::onRegionCorrelation()
 
 void TrafficAnalysisSystem::onFrequentPath()
 {
+    allTaxiModeActive = false;
+    viewportSyncTimer->stop();
+
     std::vector<GPSPoint> traj1;
     traj1.push_back({10, 0, 116.38000000, 39.90000000});
     traj1.push_back({10, 0, 116.39000000, 39.90500000});
@@ -543,6 +645,8 @@ void TrafficAnalysisSystem::onFrequentPath()
 
 void TrafficAnalysisSystem::onTravelTimeAnalysis()
 {
+    allTaxiModeActive = false;
+    viewportSyncTimer->stop();
     clearMap();
 }
 
@@ -558,7 +662,7 @@ void TrafficAnalysisSystem::showTaxiTrajectory(int taxiId)
     if (cachedTaxiId == taxiId && !cachedTrajectory.empty()) {
         trajectory = &cachedTrajectory;
     } else {
-        SimpleTimer timer("id查询",true);
+        SimpleTimer timer("id查询", true);
         cachedTrajectory = DataManager::getPointsRangeById(taxiId);
         timer.stop();
         cachedTaxiId = taxiId;
@@ -579,27 +683,35 @@ void TrafficAnalysisSystem::showTaxiTrajectory(int taxiId)
              << ", pointCount =" << trajectory->size();
 }
 
-void TrafficAnalysisSystem::showAllTaxiPoints(double minLon,double minlat ,double maxLon,double maxlat)
+void TrafficAnalysisSystem::showAllTaxiPoints(double minLon, double minLat, double maxLon, double maxLat, int zoom)
 {
-    qDebug()<<minLon<<","<<minlat<<"-"<<maxLon<<","<<maxlat;
+    qDebug() << "当前视野:" << minLon << "," << minLat << "-" << maxLon << "," << maxLat
+             << ", zoom =" << zoom;
+
     if (!dbManager) {
         QMessageBox::warning(this, QStringLiteral("轨迹查询"),
                              QStringLiteral("数据库管理器未初始化。"));
         return;
     }
 
-    const std::vector<GPSPoint>* points = nullptr;
-    cachedAllPoints = DataManager::querySpatial( minLon, minlat , maxLon, maxlat);
-    points = &cachedAllPoints;
+    std::vector<GPSPoint> points = DataManager::querySpatial(minLon, minLat, maxLon, maxLat);
+    std::vector<ClusterPoint> clustered = DataManager::clusterPointsForView(points,
+                                                                            minLon, minLat,
+                                                                            maxLon, maxLat,
+                                                                            zoom);
 
-    if (points->empty()) {
-        QMessageBox::information(this, QStringLiteral("轨迹查询"),
-                                 QStringLiteral("数据库中没有可显示的轨迹数据。"));
-        return;
-    }
+    cachedAllPoints = std::move(points);
 
     clearMap();
-    const QString arr = pointsToJsArray(*points);
-    runJs("setAllTaxiPoints(" + arr + ");");
-    qDebug() << "F1 all taxi points display completed. sampledPointCount =" << points->size();
+    showClusteredPoints(clustered);
+
+    hasLastViewportState = true;
+    lastViewportMinLon = minLon;
+    lastViewportMinLat = minLat;
+    lastViewportMaxLon = maxLon;
+    lastViewportMaxLat = maxLat;
+    lastViewportZoom = zoom;
+
+    qDebug() << "后端聚合显示完成。原始点数 =" << cachedAllPoints.size()
+             << ", 聚合后对象数 =" << clustered.size();
 }

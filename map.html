@@ -14,41 +14,31 @@
         }
     </style>
 
-    <!-- 百度地图 JS API -->
     <script src="https://api.map.baidu.com/api?v=2.0&ak=hf0NAP9ccSVWWMCH0gb0jrZqM0kfwclr&s=1"></script>
     <script src="https://api.map.baidu.com/library/PointCollection/1.4/src/PointCollection_min.js"></script>
 </head>
 
 <body>
 <div id="container"></div>
-
 <script>
-    // =========================
-    // 全局变量
-    // =========================
     var map = null;
     var overlays = [];
     var pointCollectionOverlay = null;
     var overlayRestoreTimer = null;
-    var allTaxiPointsData = [];
-    var allTaxiDisplayActive = false;
 
-    // 默认初始化参数（北京）
     var defaultCenter = { lng: 116.404, lat: 39.915 };
     var defaultZoom = 12;
 
-    // =========================
-    // 初始化地图
-    // =========================
     function initMap() {
         map = new BMap.Map("container");
         var center = new BMap.Point(defaultCenter.lng, defaultCenter.lat);
 
         map.centerAndZoom(center, defaultZoom);
-        map.enableScrollWheelZoom(true);   // 鼠标滚轮缩放
-        map.enableDoubleClickZoom(true);   // 双击缩放
-        map.enableKeyboard();              // 键盘操作
-        map.enableDragging();              // 拖拽
+        map.enableScrollWheelZoom(true);
+        map.enableDoubleClickZoom(true);
+        map.enableKeyboard();
+        map.enableDragging();
+
         if (map.enableContinuousZoom) {
             map.enableContinuousZoom();
         }
@@ -60,23 +50,10 @@
         map.addEventListener("movestart", suspendOverlayRendering);
         map.addEventListener("zoomend", resumeOverlayRendering);
         map.addEventListener("moveend", resumeOverlayRendering);
-        map.addEventListener("zoomend", function () {
-            if (allTaxiDisplayActive) {
-                renderAllTaxiPointsByZoom();
-            }
-        });
-        map.addEventListener("moveend", function () {
-            if (allTaxiDisplayActive) {
-                renderAllTaxiPointsByZoom();
-            }
-        });
 
         console.log("地图初始化完成");
     }
 
-    // =========================
-    // 工具函数
-    // =========================
     function ensureMapReady() {
         if (!map) {
             console.error("地图尚未初始化");
@@ -131,8 +108,6 @@
     function clearMap() {
         if (!ensureMapReady()) return;
 
-        allTaxiDisplayActive = false;
-
         if (pointCollectionOverlay) {
             map.removeOverlay(pointCollectionOverlay);
             pointCollectionOverlay = null;
@@ -142,8 +117,6 @@
             map.removeOverlay(overlays[i]);
         }
         overlays = [];
-
-        console.log("已清空所有覆盖物");
     }
 
     function clearRenderedOverlaysOnly() {
@@ -160,79 +133,11 @@
         overlays = [];
     }
 
-    // =========================
-    // 地图视图控制
-    // =========================
-    function setCenter(lng, lat) {
-        if (!ensureMapReady()) return;
-
-        var center = new BMap.Point(lng, lat);
-        map.setCenter(center);
-    }
-
-    function setZoom(level) {
-        if (!ensureMapReady()) return;
-
-        map.setZoom(level);
-    }
-
-    function zoomInMap() {
-        if (!ensureMapReady()) return;
-
-        var currentZoom = map.getZoom();
-        map.setZoom(currentZoom + 1);
-    }
-
-    function zoomOutMap() {
-        if (!ensureMapReady()) return;
-
-        var currentZoom = map.getZoom();
-        map.setZoom(currentZoom - 1);
-    }
-
-    function resetView(lng, lat, zoom) {
-        if (!ensureMapReady()) return;
-
-        var center = new BMap.Point(lng, lat);
-        map.centerAndZoom(center, zoom);
-    }
-
-    function getCurrentZoom() {
-        if (!ensureMapReady()) return -1;
-        return map.getZoom();
-    }
-
-    // =========================
-    // 点渲染
-    // =========================
-    function addPoint(lng, lat) {
-        if (!ensureMapReady()) return;
-
-        var point = new BMap.Point(lng, lat);
-        var marker = new BMap.Marker(point);
-        addOverlayAndStore(marker);
-    }
-
-    function addPointWithLabel(lng, lat, text) {
-        if (!ensureMapReady()) return;
-
-        var point = new BMap.Point(lng, lat);
-        var marker = new BMap.Marker(point);
-
-        var label = new BMap.Label(text, {
-            position: point,
-            offset: new BMap.Size(12, -10)
-        });
-
-        marker.setLabel(label);
-        addOverlayAndStore(marker);
-    }
-
     function addPoints(points) {
         if (!ensureMapReady()) return;
         if (!points || points.length === 0) return;
 
-        if (window.BMapLib && BMapLib.PointCollection) {
+        if (window.BMapLib && BMapLib.PointCollection && points.length > 20) {
             if (pointCollectionOverlay) {
                 map.removeOverlay(pointCollectionOverlay);
                 pointCollectionOverlay = null;
@@ -246,7 +151,7 @@
             pointCollectionOverlay = new BMapLib.PointCollection(collectionPoints, {
                 size: BMAP_POINT_SIZE_SMALL,
                 shape: BMAP_POINT_SHAPE_CIRCLE,
-                color: "#d62828"
+                color: "#2563eb"
             });
             map.addOverlay(pointCollectionOverlay);
             resumeOverlayRendering();
@@ -254,149 +159,114 @@
         }
 
         for (var j = 0; j < points.length; j++) {
-            addPoint(points[j].lng, points[j].lat);
+            var pt = new BMap.Point(points[j].lng, points[j].lat);
+            var marker = new BMap.Marker(pt);
+            addOverlayAndStore(marker);
         }
         resumeOverlayRendering();
     }
 
-    function createCountLabel(point, text, bgColor) {
+    function createCountLabel(point, text) {
         var label = new BMap.Label(text, {
             position: point,
-            offset: new BMap.Size(0, 0)
+            offset: new BMap.Size(-16, -16)
         });
+
         label.setStyle({
             color: "#ffffff",
-            backgroundColor: bgColor,
+            backgroundColor: "#ef4444",
             border: "0",
-            borderRadius: "14px",
-            padding: "4px 8px",
+            borderRadius: "16px",
+            padding: "6px 10px",
             fontSize: "12px",
-            fontWeight: "600",
+            fontWeight: "700",
             lineHeight: "16px",
-            boxShadow: "0 2px 10px rgba(0,0,0,0.18)"
+            textAlign: "center",
+            minWidth: "20px",
+            boxShadow: "0 2px 10px rgba(0,0,0,0.20)",
+            cursor: "pointer"
         });
+
         return label;
     }
 
-    function renderHotspots(points) {
-        var grid = {};
-        var lonStep = 0.08;
-        var latStep = 0.08;
+    function zoomToClusterBounds(item) {
+        var minLon = item.minLon;
+        var minLat = item.minLat;
+        var maxLon = item.maxLon;
+        var maxLat = item.maxLat;
 
-        for (var i = 0; i < points.length; i++) {
-            var p = points[i];
-            var gx = Math.floor(p.lng / lonStep);
-            var gy = Math.floor(p.lat / latStep);
-            var key = gx + "_" + gy;
-            if (!grid[key]) {
-                grid[key] = { sumLng: 0, sumLat: 0, count: 0 };
-            }
-            grid[key].sumLng += p.lng;
-            grid[key].sumLat += p.lat;
-            grid[key].count += 1;
-        }
+        // 如果 bbox 太小，人工扩一点，不然放大会不明显
+        var lonSpan = Math.max(maxLon - minLon, 0.002);
+        var latSpan = Math.max(maxLat - minLat, 0.002);
 
-        Object.keys(grid).forEach(function (key) {
-            var item = grid[key];
-            var center = new BMap.Point(item.sumLng / item.count, item.sumLat / item.count);
-            var label = createCountLabel(center, "", "#d62828");
-            label.setStyle({
-                color: "transparent",
-                backgroundColor: "#d62828",
-                border: "0",
-                borderRadius: "50%",
-                width: "14px",
-                height: "14px",
-                padding: "0",
-                lineHeight: "14px",
-                boxShadow: "0 2px 10px rgba(0,0,0,0.18)"
-            });
-            addOverlayAndStore(label);
-        });
+        var centerLon = (minLon + maxLon) / 2.0;
+        var centerLat = (minLat + maxLat) / 2.0;
+
+        var p1 = new BMap.Point(centerLon - lonSpan / 2.0, centerLat - latSpan / 2.0);
+        var p2 = new BMap.Point(centerLon + lonSpan / 2.0, centerLat + latSpan / 2.0);
+
+        map.setViewport([p1, p2]);
     }
 
-    function renderClusterCounts(points) {
-        var zoom = map.getZoom();
-        var grid = {};
-        var lonStep = zoom >= 13 ? 0.015 : 0.03;
-        var latStep = zoom >= 13 ? 0.015 : 0.03;
-
-        for (var i = 0; i < points.length; i++) {
-            var p = points[i];
-            var gx = Math.floor(p.lng / lonStep);
-            var gy = Math.floor(p.lat / latStep);
-            var key = gx + "_" + gy;
-            if (!grid[key]) {
-                grid[key] = { sumLng: 0, sumLat: 0, count: 0 };
-            }
-            grid[key].sumLng += p.lng;
-            grid[key].sumLat += p.lat;
-            grid[key].count += 1;
-        }
-
-        Object.keys(grid).forEach(function (key) {
-            var item = grid[key];
-            var center = new BMap.Point(item.sumLng / item.count, item.sumLat / item.count);
-            var label = createCountLabel(center, String(item.count), "#ef4444");
-            addOverlayAndStore(label);
-        });
-    }
-
-    function getViewportFilteredPoints(points) {
-        if (!map || !points || points.length === 0) {
-            return [];
-        }
-
-        var bounds = map.getBounds();
-        var sw = bounds.getSouthWest();
-        var ne = bounds.getNorthEast();
-        var result = [];
-
-        for (var i = 0; i < points.length; i++) {
-            var p = points[i];
-            if (p.lng >= sw.lng && p.lng <= ne.lng && p.lat >= sw.lat && p.lat <= ne.lat) {
-                result.push(p);
-            }
-        }
-
-        return result;
-    }
-
-    function setAllTaxiPoints(points) {
-        if (!ensureMapReady()) return;
-
-        allTaxiPointsData = points || [];
-        allTaxiDisplayActive = true;
-        renderAllTaxiPointsByZoom();
-    }
-
-    function renderAllTaxiPointsByZoom() {
-        if (!ensureMapReady() || !allTaxiDisplayActive) return;
-
+    function renderChildrenPoints(children) {
         clearRenderedOverlaysOnly();
+        addPoints(children);
 
-        var zoom = map.getZoom();
-        var visiblePoints = getViewportFilteredPoints(allTaxiPointsData);
-        var sourcePoints = visiblePoints.length > 0 ? visiblePoints : allTaxiPointsData;
-
-        if (!sourcePoints || sourcePoints.length === 0) return;
-
-        if (zoom <= 11) {
-            renderHotspots(sourcePoints);
-        } else if (zoom <= 14) {
-            renderClusterCounts(sourcePoints);
-        } else {
-            addPoints(sourcePoints);
+        if (children && children.length > 0) {
+            var bPoints = [];
+            for (var i = 0; i < children.length; i++) {
+                bPoints.push(new BMap.Point(children[i].lng, children[i].lat));
+            }
+            map.setViewport(bPoints);
         }
     }
 
-    // =========================
-    // 线渲染
-    // =========================
+    function renderClusterPoints(points) {
+        if (!ensureMapReady()) return;
+        if (!points || points.length === 0) return;
+
+        var singlePoints = [];
+
+        for (var i = 0; i < points.length; i++) {
+            var item = points[i];
+
+            if (item.isCluster) {
+                var center = new BMap.Point(item.lng, item.lat);
+                var label = createCountLabel(center, String(item.count));
+
+                (function(clusterItem) {
+                    label.addEventListener("click", function() {
+                        if (clusterItem.count <= 100 && clusterItem.children && clusterItem.children.length > 0) {
+                            renderChildrenPoints(clusterItem.children);
+                        } else {
+                            zoomToClusterBounds(clusterItem);
+                        }
+                    });
+                })(item);
+
+                addOverlayAndStore(label);
+            } else {
+                singlePoints.push({ lng: item.lng, lat: item.lat });
+            }
+        }
+
+        if (singlePoints.length > 0) {
+            addPoints(singlePoints);
+        } else {
+            resumeOverlayRendering();
+        }
+    }
+
+    function setClusterPoints(points) {
+        if (!ensureMapReady()) return;
+        clearRenderedOverlaysOnly();
+        renderClusterPoints(points || []);
+    }
+
     function addPolyline(points) {
         if (!ensureMapReady()) return;
         if (!points || points.length < 2) return;
-        allTaxiDisplayActive = false;
 
         var path = [];
         for (var i = 0; i < points.length; i++) {
@@ -413,13 +283,9 @@
         resumeOverlayRendering();
     }
 
-    // =========================
-    // 矩形区域渲染
-    // =========================
     function drawRect(leftTop, rightBottom) {
         if (!ensureMapReady()) return;
         if (!leftTop || !rightBottom) return;
-        allTaxiDisplayActive = false;
 
         var leftBottom = { lng: leftTop.lng, lat: rightBottom.lat };
         var rightTop = { lng: rightBottom.lng, lat: leftTop.lat };
@@ -428,7 +294,7 @@
             new BMap.Point(leftTop.lng, leftTop.lat),
             new BMap.Point(rightTop.lng, rightTop.lat),
             new BMap.Point(rightBottom.lng, rightBottom.lat),
-            new BMap.Point(leftBottom.lng, leftBottom.lat)
+            new BMap.Point(leftBottom.lng, rightBottom.lat)
         ];
 
         var polygon = new BMap.Polygon(rectPoints, {
@@ -443,9 +309,6 @@
         resumeOverlayRendering();
     }
 
-    // =========================
-    // 自动适配视野
-    // =========================
     function fitViewToPoints(points) {
         if (!ensureMapReady()) return;
         if (!points || points.length === 0) return;
@@ -458,58 +321,37 @@
         map.setViewport(bPoints);
     }
 
-    // =========================
-    // 示例函数（调试用）
-    // =========================
-    function demoRender() {
-        clearMap();
+    function getViewBoundsJson() {
+        if (!map) return "";
 
-        addPointWithLabel(116.404, 39.915, "起点");
+        var bounds = map.getBounds();
+        var sw = bounds.getSouthWest();
+        var ne = bounds.getNorthEast();
 
-        var demoPath = [
-            { lng: 116.404, lat: 39.915 },
-            { lng: 116.414, lat: 39.925 },
-            { lng: 116.424, lat: 39.935 },
-            { lng: 116.434, lat: 39.945 }
-        ];
-
-        addPolyline(demoPath);
-
-        drawRect(
-            { lng: 115.9, lat: 40.1 },
-            { lng: 116.6, lat: 39.7 }
-        );
-
-        fitViewToPoints(demoPath);
+        return JSON.stringify({
+            minLon: sw.lng,
+            minLat: sw.lat,
+            maxLon: ne.lng,
+            maxLat: ne.lat
+        });
     }
-	function getViewBoundsJson() {
-	if (!map) return "";
 
-	var bounds = map.getBounds();
-	var sw = bounds.getSouthWest();
-	var ne = bounds.getNorthEast();
+    function getViewStateJson() {
+        if (!map) return "";
 
-	return JSON.stringify({
-		minLon: sw.lng,
-		minLat: sw.lat,
-		maxLon: ne.lng,
-		maxLat: ne.lat
-	});
-}
-	function getCurrentZoomLevel() {
-		if (!map) return -1;
-		return map.getZoom();
-	}
-	function getCurrentCenter() {
-    if (!map) return null;
+        var bounds = map.getBounds();
+        var sw = bounds.getSouthWest();
+        var ne = bounds.getNorthEast();
 
-    var center = map.getCenter();
-    return {
-        lng: center.lng,
-        lat: center.lat
-    };
-	}
-    // 页面加载完成后初始化
+        return JSON.stringify({
+            minLon: sw.lng,
+            minLat: sw.lat,
+            maxLon: ne.lng,
+            maxLat: ne.lat,
+            zoom: map.getZoom()
+        });
+    }
+
     window.onload = function() {
         initMap();
     };

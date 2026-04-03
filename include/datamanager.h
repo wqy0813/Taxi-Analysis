@@ -4,22 +4,40 @@
 #include <QString>
 #include <vector>
 #include <memory>
-#include<unordered_map>
+#include <unordered_map>
+#include <unordered_set>
 #include "appconfig.h"
 #include "quadtree.h"
-#include<set>
+#include <set>
 
 class DatabaseManager;
+
 struct GPSPoint {
     int id;
     long long timestamp;
     double lon;
     double lat;
 };
+
 struct VehicleRange {
     int start;
     int end;
 };
+
+struct ClusterPoint {
+    double lon;
+    double lat;
+    int count;
+    bool isCluster;
+
+    double minLon;
+    double minLat;
+    double maxLon;
+    double maxLat;
+
+    std::vector<GPSPoint> children; // 只有 count <= 100 时才填充
+};
+
 class DataManager {
 public:
     static void loadTxtFiles(const AppConfig& config);
@@ -27,24 +45,32 @@ public:
     static bool loadAllPoints(DatabaseManager& dbm);
     static const std::vector<GPSPoint>& getAllPoints() { return allPoints; }
 
-    // 新增：建立四叉树
     static void buildQuadTree(const AppConfig& config);
-
-    // 新增：判断四叉树是否已建立
     static bool hasQuadTree();
 
-    // 新增：区域查询，返回命中的点
     static std::vector<GPSPoint> querySpatial(double minLon, double minLat,
-                                            double maxLon, double maxLat);
+                                              double maxLon, double maxLat);
+
     static std::vector<GPSPoint> querySpatialAndTime(double minLon, double minLat,
-                                              double maxLon, double maxLat,long long minTimeStamp,long long maxTimeStamp);
+                                                     double maxLon, double maxLat,
+                                                     long long minTimeStamp, long long maxTimeStamp);
+
     static std::unordered_set<int> querySpatioTemporalUniqueIds(double minLon, double minLat,
-                                                     double maxLon, double maxLat,long long minTimeStamp,long long maxTimeStamp);
+                                                                double maxLon, double maxLat,
+                                                                long long minTimeStamp, long long maxTimeStamp);
+
+    static std::vector<ClusterPoint> clusterPointsForView(const std::vector<GPSPoint>& points,
+                                                          double minLon, double minLat,
+                                                          double maxLon, double maxLat,
+                                                          int zoom);
+
     static std::set<const QuadNode*> exceptionalNodes;
+
     static int getUniqueCountById(const std::vector<GPSPoint>& points);
     static std::vector<GPSPoint> getPointsRangeById(int id);
+
 private:
-    static std::unordered_map<int,VehicleRange> idToRange;
+    static std::unordered_map<int, VehicleRange> idToRange;
     static std::vector<GPSPoint> allPoints;
     static std::unique_ptr<QuadNode> quadTreeRoot;
 };
