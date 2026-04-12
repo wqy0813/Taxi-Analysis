@@ -1,62 +1,61 @@
 cmake_minimum_required(VERSION 3.16)
 
-# 建议项目名保持统一，这里用 TaxiDataAnalysis
 project(TaxiDataAnalysis VERSION 0.1 LANGUAGES CXX)
 
-# 1. 基础设置
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTOUIC ON)
-set(CMAKE_AUTORCC ON)
 
-# 2. 寻找 Qt 组件 (兼容 Qt6 和 Qt5，并加入 Sql 模块)
-find_package(Qt6 COMPONENTS Core Gui Widgets Sql WebEngineWidgets  QUIET )
-if(NOT Qt6_FOUND)
-    find_package(Qt5 5.15 COMPONENTS Core Gui Widgets Sql WebEngineWidgets  REQUIRED)
-endif()
+# Support both Qt5 and Qt6.
+# Let CMake pick the major version, then load the matching modules.
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Sql)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Sql)
 
-# 3. 包含头文件目录
-# 这样你在写代码时可以直接 #include "databasemanager.h" 而不用写长路径
 include_directories(include)
-include_directories(TrafficAnalysisSystem)
 
-# 4. 自动扫描所有源文件
-# 这样以后组员新加了 .cpp 文件，只要在这些文件夹里，就不用手动改 CMake
-file(GLOB_RECURSE SOURCES
-    "main.cpp"
-    "src/*.cpp"
-    "include/*.h"
-    "TrafficAnalysisSystem/*.cpp"
-    "TrafficAnalysisSystem/*.h"
-    "forms/*.ui"
+set(SOURCES
+    src/main.cpp
+    src/appconfig.cpp
+    src/databasemanager.cpp
+    src/datamanager.cpp
+    src/quadtree.cpp
+    src/densityanalysis.cpp
+    src/httpserver.cpp
+    include/appconfig.h
+    include/databasemanager.h
+    include/datamanager.h
+    include/quadtree.h
+    include/utils.h
+    include/densityanalysis.h
+    include/httpserver.h
 )
 
-# 5. 生成可执行文件
 add_executable(TaxiDataAnalysis ${SOURCES})
 
-# 6. 链接 Qt 库 (根据找到的版本自动链接)
-if(Qt6_FOUND)
-    target_link_libraries(TaxiDataAnalysis PRIVATE
-        Qt6::Core
-        Qt6::Gui
-        Qt6::Widgets
-        Qt6::Sql
-        Qt6::WebEngineWidgets
-    )
-else()
-    target_link_libraries(TaxiDataAnalysis PRIVATE
-        Qt5::Core
-        Qt5::Gui
-        Qt5::Widgets
-        Qt5::Sql
-        Qt5::WebEngineWidgets
-    )
-endif()
+target_compile_definitions(TaxiDataAnalysis PRIVATE
+    APP_SOURCE_WEB_ROOT="${CMAKE_SOURCE_DIR}/web"
+)
 
-# 7. 设置输出路径与安装规则
+target_link_libraries(TaxiDataAnalysis PRIVATE
+    Qt${QT_VERSION_MAJOR}::Core
+    Qt${QT_VERSION_MAJOR}::Sql
+)
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+add_custom_command(TARGET TaxiDataAnalysis POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/config.ini
+        $<TARGET_FILE_DIR:TaxiDataAnalysis>/config.ini
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/data
+        $<TARGET_FILE_DIR:TaxiDataAnalysis>/data
+    COMMENT "Copy runtime config and data assets next to the executable"
+)
+
+# Keep installation simple: the full install tree should run as-is.
 install(TARGETS TaxiDataAnalysis
     RUNTIME DESTINATION bin
 )
+
+install(FILES ${CMAKE_SOURCE_DIR}/config.ini DESTINATION bin)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/data DESTINATION bin)

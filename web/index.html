@@ -1,0 +1,214 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f8fc">
+    <title>TaxiFlow - 轨迹分析</title>
+    <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div class="app-shell">
+    <aside class="rail">
+        <header class="brand">
+            <h1>出租车轨迹分析系统</h1>
+        </header>
+
+        <section class="stats" aria-label="数据状态">
+            <div class="stat">
+                <div class="stat-head">
+                    <span class="stat-mark stat-mark-teal" aria-hidden="true"></span>
+                    <span>数据点</span>
+                </div>
+                <strong id="meta-total-points">-</strong>
+            </div>
+            <div class="stat">
+                <div class="stat-head">
+                    <span class="stat-mark stat-mark-blue" aria-hidden="true"></span>
+                    <span>服务</span>
+                </div>
+                <strong id="server-status">连接中</strong>
+            </div>
+        </section>
+
+        <section class="stack">
+            <div class="stack-title">当前功能</div>
+            <div class="tool-accordion">
+                <div class="tool-item">
+                    <button class="tool-btn" data-panel="trajectory" type="button" aria-expanded="false">
+                        <span class="tool-btn-title">查询轨迹</span>
+                    </button>
+                    <div class="tool-panel" data-panel="trajectory">
+                        <div class="panel-body">
+                            <div class="panel-group">
+                                <div class="panel-group-title">参数</div>
+                                <label for="trajectory-id">车辆 ID</label>
+                                <div class="inline-field compact">
+                                    <input id="trajectory-id" type="number" min="0" value="0" placeholder="0">
+                                    <button id="trajectory-btn" class="primary" type="button">查询</button>
+                                </div>
+                                <p class="hint">0 表示全部车辆</p>
+                            </div>
+                            <div class="panel-group">
+                                <div class="panel-group-title">结果</div>
+                                <div id="trajectory-info" class="info-panel empty">等待查询</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tool-item">
+                    <button class="tool-btn" data-panel="query" type="button" aria-expanded="false">
+                        <span class="tool-btn-title">区域查找</span>
+                    </button>
+                    <div class="tool-panel" data-panel="query">
+                        <div class="panel-body">
+                            <div class="panel-group">
+                                <div class="panel-group-title">区域</div>
+                                <div class="action-row compact">
+                                    <button id="select-region-btn" class="primary" type="button">开始框选</button>
+                                    <button id="clear-region-btn" class="ghost" type="button">清除区域</button>
+                                </div>
+                                <div class="status-panel">
+                                    <div class="status-panel-head">
+                                        <span>当前区域</span>
+                                        <span id="region-state-badge" class="badge muted">未选</span>
+                                    </div>
+                                    <div id="region-info" class="info-panel empty">未框选</div>
+                                </div>
+                            </div>
+                            <div class="panel-group">
+                                <div class="panel-group-title">时间范围</div>
+                                <div class="field-grid region-time-grid">
+                                    <div>
+                                        <label for="region-start">开始时间</label>
+                                        <input id="region-start" type="datetime-local">
+                                    </div>
+                                    <div>
+                                        <label for="region-end">结束时间</label>
+                                        <input id="region-end" type="datetime-local">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="panel-group">
+                                <div class="panel-group-title">查询</div>
+                                <button id="region-query-btn" class="primary wide" type="button">查询</button>
+                                <div id="region-query-info" class="info-panel empty">等待查询</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tool-item">
+                    <button class="tool-btn" data-panel="density" type="button" aria-expanded="false">
+                        <span class="tool-btn-title">车辆密度分析</span>
+                    </button>
+                    <div class="tool-panel" data-panel="density">
+                        <div class="panel-body">
+                            <div class="panel-group">
+                                <div class="panel-group-title">参数</div>
+                                <div class="field-grid density-grid">
+                                    <div class="density-time-field">
+                                        <label for="density-start">开始时间</label>
+                                        <input id="density-start" type="datetime-local">
+                                    </div>
+                                    <div class="density-time-field">
+                                        <label for="density-end">结束时间</label>
+                                        <input id="density-end" type="datetime-local">
+                                    </div>
+                                    <div>
+                                        <label for="density-cell-size">网格 r（米）</label>
+                                        <input id="density-cell-size" type="number" min="50" step="50" value="500">
+                                    </div>
+                                    <div>
+                                        <label for="density-interval">时间粒度</label>
+                                        <select id="density-interval">
+                                            <option value="10">10 分钟</option>
+                                            <option value="30" selected>30 分钟</option>
+                                            <option value="60">60 分钟</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="panel-group">
+                                <div class="panel-group-title">分析</div>
+                                <button id="density-btn" class="primary wide" type="button">分析</button>
+                            </div>
+                            <div class="panel-group">
+                                <div class="panel-group-title">输出</div>
+                                <label for="density-bucket">时间桶</label>
+                                <select id="density-bucket"></select>
+                                <div class="density-time-controls">
+                                    <button id="density-prev" class="ghost" type="button">上一段</button>
+                                    <button id="density-play" class="primary" type="button">播放</button>
+                                    <button id="density-next" class="ghost" type="button">下一段</button>
+                                </div>
+                                <input id="density-timeline" type="range" min="0" max="0" value="0" step="1">
+                                <div id="density-time-label" class="hint">-</div>
+                                <div id="density-info" class="info-panel empty">等待查询</div>
+                                <div id="density-trend-summary" class="info-panel empty">点击网格查看趋势</div>
+                                <canvas id="density-trend-canvas" class="density-trend-canvas"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+        </section>
+
+        <section class="stack">
+            <div class="stack-title">预留功能</div>
+            <nav class="tool-list reserved" aria-label="预留功能">
+                <button class="tool-btn ghost-btn" type="button" disabled>
+                    <span class="tool-btn-title">区域关联分析 1</span>
+                    <span class="tool-btn-state">待接入</span>
+                </button>
+                <button class="tool-btn ghost-btn" type="button" disabled>
+                    <span class="tool-btn-title">区域关联分析 2</span>
+                    <span class="tool-btn-state">待接入</span>
+                </button>
+                <button class="tool-btn ghost-btn" type="button" disabled>
+                    <span class="tool-btn-title">频繁路径分析 1</span>
+                    <span class="tool-btn-state">待接入</span>
+                </button>
+                <button class="tool-btn ghost-btn" type="button" disabled>
+                    <span class="tool-btn-title">频繁路径分析 2</span>
+                    <span class="tool-btn-state">待接入</span>
+                </button>
+                <button class="tool-btn ghost-btn" type="button" disabled>
+                    <span class="tool-btn-title">通行时间分析</span>
+                    <span class="tool-btn-state">待接入</span>
+                </button>
+            </nav>
+        </section>
+    </aside>
+
+    <main class="stage">
+        <div class="stage-topbar">
+            <div class="stage-chips">
+                <span class="chip chip-strong" id="stage-status">地图</span>
+            </div>
+            <div class="stage-legend" aria-label="图层说明">
+                <span><i class="legend-dot live"></i>轨迹</span>
+                <span><i class="legend-dot density"></i>密度</span>
+            </div>
+        </div>
+
+        <section class="map-stage">
+            <div class="map-shell">
+                <div class="acet-beams" aria-hidden="true">
+                    <span class="beam beam-a"></span>
+                    <span class="beam beam-b"></span>
+                    <span class="beam beam-c"></span>
+                </div>
+                <div id="selection-layer" class="selection-layer"></div>
+                <div id="map"></div>
+                <canvas id="density-canvas"></canvas>
+                <div id="density-tooltip" class="density-tooltip"></div>
+                <div id="selection-box"></div>
+            </div>
+        </section>
+    </main>
+</div>
+<script src="https://api.map.baidu.com/library/PointCollection/1.4/src/PointCollection_min.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

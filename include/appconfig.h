@@ -14,12 +14,14 @@ struct AppConfig {
     double maxLat;
 
     int batchSize;
+    quint16 serverPort;
 
     double mapCenterLon;
     double mapCenterLat;
     int mapInitialZoom;
     int mapMinZoom;
     int mapMaxZoom;
+    QString baiduMapAk;
     int rectCapacity;
 
     int maxQuadTreeDepth;
