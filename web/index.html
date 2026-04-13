@@ -147,7 +147,13 @@
                                 <div id="density-time-label" class="hint">-</div>
                                 <div id="density-info" class="info-panel empty">等待查询</div>
                                 <div id="density-trend-summary" class="info-panel empty">点击网格查看趋势</div>
-                                <div id="density-trend-chart" class="density-trend-chart" role="img" aria-label="密度趋势图"></div>
+                                <div class="density-trend-shell">
+                                    <div class="density-trend-shell-head">
+                                        <span class="density-trend-shell-title">车辆密度趋势</span>
+                                        <button id="density-trend-expand" class="density-trend-expand" type="button" aria-label="放大趋势图">⛶</button>
+                                    </div>
+                                    <div id="density-trend-preview" class="density-trend-preview" role="img" aria-label="车辆密度趋势预览"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -205,7 +211,20 @@
                 <div id="selection-box"></div>
             </div>
         </section>
-</main>
+    </main>
+</div>
+<div id="density-trend-modal" class="density-trend-modal" hidden>
+    <div class="density-trend-modal-backdrop" data-close="1"></div>
+    <section class="density-trend-modal-panel" role="dialog" aria-modal="true" aria-labelledby="density-trend-modal-title">
+        <header class="density-trend-modal-head">
+            <div class="density-trend-modal-copy">
+                <h2 id="density-trend-modal-title">车辆密度趋势分析</h2>
+                <p id="density-trend-modal-subtitle">网格 -，共 0 个时间段</p>
+            </div>
+            <button id="density-trend-modal-close" class="density-trend-modal-close" type="button" aria-label="关闭弹层">×</button>
+        </header>
+        <div id="density-trend-modal-chart" class="density-trend-modal-chart" aria-label="放大趋势图"></div>
+    </section>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
 <script src="https://api.map.baidu.com/library/PointCollection/1.4/src/PointCollection_min.js"></script>
