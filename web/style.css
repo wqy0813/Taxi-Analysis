@@ -752,25 +752,15 @@ button,
     z-index: 1;
 }
 
-.density-echarts-layer {
+.density-overlay-layer {
     position: absolute;
     inset: 0;
     z-index: 8;
     pointer-events: none;
 }
 
-.density-echarts-layer .ec-extension-bmap,
-.density-echarts-layer .BMap,
-.density-echarts-layer .BMap_mask,
-.density-echarts-layer .BMap_cpyCtrl,
-.density-echarts-layer .BMap_noscreen,
-.density-echarts-layer .anchorBL {
-    opacity: 0 !important;
-    visibility: hidden !important;
-}
-
-.density-echarts-layer canvas {
-    pointer-events: none;
+.density-overlay-canvas {
+    display: block;
 }
 
 .density-tooltip {
