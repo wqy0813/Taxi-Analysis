@@ -9,12 +9,16 @@
     densityResult: null,
     currentBucketIndex: 0,
     densityOverlay: null,
+    densityRenderModel: null,
     densityCellMaps: [],
+    densityChunkMaps: [],
+    densityChunkCache: new Map(),
+    densityChunkAccessTick: 0,
     densityPlayTimer: null,
     densityHoverCell: null,
     densitySelectedCellKey: null,
-    densityTrendCanvas: null,
-    densityTrendCtx: null,
+    densityTrendChart: null,
+    densityTrendEl: null,
     densityTooltip: null,
     densityRedrawFrame: null,
     trajectoryOverlays: [],
@@ -28,6 +32,10 @@
     activeDockPanel: null,
     openDockPanel: null
 };
+
+const DENSITY_CHUNK_CELL_SIZE = 16;
+const DENSITY_CHUNK_CACHE_LIMIT = 96;
+const DENSITY_CHUNK_PREFETCH_MARGIN = 1;
 
 const API_BASE = location.protocol === "file:" ? "http://127.0.0.1:8080" : "";
 
@@ -190,6 +198,14 @@ function setDockPanelState(name, open) {
 
     state.activeDockPanel = name;
     state.openDockPanel = open;
+
+    if (open === "density") {
+        ensureDensityTrendChart();
+        requestAnimationFrame(() => {
+            resizeDensityTrendChart();
+            renderSelectedCellTrend();
+        });
+    }
 }
 
 function activateDockPanel(name) {
@@ -276,7 +292,7 @@ function initMap() {
     state.map.addEventListener("zoomend", refresh);
     state.map.addEventListener("moveend", refresh);
     window.addEventListener("resize", () => {
-        syncDensityTrendCanvasSize();
+        resizeDensityTrendChart();
         requestDensityRedraw();
         renderSelectedCellTrend();
     });
@@ -349,11 +365,14 @@ function resetDensityState() {
         state.densityPlayTimer = null;
     }
     state.densityResult = null;
+    state.densityRenderModel = null;
     state.currentBucketIndex = 0;
     state.densityCellMaps = [];
+    state.densityChunkMaps = [];
     state.densityHoverCell = null;
     state.densitySelectedCellKey = null;
     cancelDensityRedraw();
+    clearDensityChunkCache();
     qs("density-bucket").innerHTML = "";
     const timeline = qs("density-timeline");
     if (timeline) {
@@ -368,7 +387,7 @@ function resetDensityState() {
     setText("density-time-label", "-");
     renderInfoPanel("density-trend-summary", [], "点击网格查看趋势");
     hideDensityTooltip();
-    clearDensityTrendCanvas();
+    clearDensityTrendChart();
     clearDensityOverlay();
 }
 
@@ -506,19 +525,24 @@ DensityGridOverlay.prototype.render = function render() {
         return;
     }
 
-    const bucket = state.densityResult.buckets[state.currentBucketIndex];
-    if (!bucket) {
+    if (!state.densityResult.buckets[state.currentBucketIndex]) {
         return;
     }
 
-    const visibleRange = getVisibleDensityGridRange();
+    const visibleChunks = getDensityVisibleChunks();
     this._ctx.save();
     this._ctx.globalCompositeOperation = "source-over";
     this._ctx.lineJoin = "miter";
     this._ctx.lineCap = "square";
 
-    drawDensityGridBase(this._ctx, visibleRange);
-    drawDensityHeatCells(this._ctx, bucket.cells || [], visibleRange);
+    for (const chunk of visibleChunks) {
+        const entry = getDensityChunkRender(state.currentBucketIndex, chunk);
+        if (!entry) {
+            continue;
+        }
+        const topLeft = pointToOverlayPixel(chunk.minLon, chunk.maxLat);
+        this._ctx.drawImage(entry.canvas, topLeft.x, topLeft.y, entry.width, entry.height);
+    }
 
     if (state.densitySelectedCellKey) {
         const selected = getDensityCellByKey(state.currentBucketIndex, state.densitySelectedCellKey);
@@ -550,8 +574,7 @@ function renderRegion(region) {
 }
 
 function ensureDensityOverlay() {
-    state.densityTrendCanvas = qs("density-trend-canvas");
-    state.densityTrendCtx = state.densityTrendCanvas.getContext("2d");
+    state.densityTrendEl = qs("density-trend-chart");
     state.densityTooltip = qs("density-tooltip");
     if (!state.densityOverlay) {
         try {
@@ -565,19 +588,257 @@ function ensureDensityOverlay() {
             state.densityOverlay = null;
         }
     }
-    syncDensityTrendCanvasSize();
+    ensureDensityTrendChart();
 }
 
-function syncDensityTrendCanvasSize() {
-    if (!state.densityTrendCanvas || !state.densityTrendCtx) {
+function ensureDensityTrendChart() {
+    if (state.densityTrendChart || !state.densityTrendEl || !window.echarts) {
         return;
     }
-    const rect = state.densityTrendCanvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    state.densityTrendCanvas.width = Math.max(1, Math.round(rect.width * dpr));
-    state.densityTrendCanvas.height = Math.max(1, Math.round(rect.height * dpr));
-    state.densityTrendCtx.setTransform(1, 0, 0, 1, 0, 0);
-    state.densityTrendCtx.scale(dpr, dpr);
+
+    state.densityTrendChart = echarts.init(state.densityTrendEl, null, {
+        renderer: "canvas"
+    });
+    state.densityTrendChart.setOption(buildDensityTrendEmptyOption(), true);
+}
+
+function resizeDensityTrendChart() {
+    if (!state.densityTrendChart) {
+        return;
+    }
+    state.densityTrendChart.resize();
+}
+
+function clearDensityTrendChart() {
+    if (!state.densityTrendChart) {
+        return;
+    }
+    state.densityTrendChart.clear();
+    state.densityTrendChart.setOption(buildDensityTrendEmptyOption(), true);
+}
+
+function buildDensityTrendEmptyOption() {
+    return {
+        backgroundColor: "transparent",
+        animation: false,
+        grid: {
+            left: 56,
+            right: 62,
+            top: 56,
+            bottom: 40,
+            containLabel: false
+        },
+        legend: {
+            show: true,
+            top: 14,
+            left: 16,
+            itemWidth: 12,
+            itemHeight: 8,
+            textStyle: {
+                color: "#30475a",
+                fontSize: 12
+            },
+            data: ["vehicleDensity", "vehicleCount"]
+        },
+        graphic: {
+            type: "text",
+            left: "center",
+            top: "middle",
+            style: {
+                text: "点击网格后显示趋势",
+                fill: "rgba(102, 120, 136, 0.82)",
+                fontSize: 14,
+                fontWeight: 600
+            }
+        }
+    };
+}
+
+function buildDensityTrendOption(trend) {
+    if (!trend || !trend.labels || trend.labels.length === 0) {
+        return buildDensityTrendEmptyOption();
+    }
+
+    return {
+        backgroundColor: "transparent",
+        animation: true,
+        animationDuration: 240,
+        animationEasing: "cubicOut",
+        tooltip: {
+            trigger: "axis",
+            axisPointer: {
+                type: "line"
+            },
+            confine: true,
+            backgroundColor: "rgba(255, 255, 255, 0.98)",
+            borderColor: "rgba(136, 163, 183, 0.16)",
+            borderWidth: 1,
+            textStyle: {
+                color: "#173447"
+            },
+            extraCssText: "box-shadow: 0 16px 36px rgba(32, 68, 96, 0.12); border-radius: 12px;",
+            formatter: (params) => {
+                const first = params?.[0];
+                const dataIndex = first?.dataIndex ?? 0;
+                const cell = trend.cells[dataIndex];
+                if (!cell) {
+                    return "";
+                }
+                const rows = [];
+                rows.push(`<div style="font-weight:700;margin-bottom:6px;">${escapeHtml(trend.labels[dataIndex] || "-")}</div>`);
+                rows.push(`<div>vehicleCount: <b>${escapeHtml(formatCount(cell.vehicleCount))}</b></div>`);
+                rows.push(`<div>vehicleDensity: <b>${escapeHtml(Number(cell.vehicleDensity || 0).toFixed(2))}</b></div>`);
+                rows.push(`<div>pointCount: <b>${escapeHtml(formatCount(cell.pointCount))}</b></div>`);
+                rows.push(`<div>flowIntensity: <b>${escapeHtml(Number(cell.flowIntensity || 0).toFixed(2))}</b></div>`);
+                if (cell.deltaVehicleCount !== undefined) {
+                    rows.push(`<div>deltaVehicleCount: <b>${escapeHtml(formatCount(cell.deltaVehicleCount))}</b></div>`);
+                }
+                if (cell.deltaVehicleDensity !== undefined) {
+                    rows.push(`<div>deltaVehicleDensity: <b>${escapeHtml(Number(cell.deltaVehicleDensity || 0).toFixed(2))}</b></div>`);
+                }
+                if (cell.deltaRate !== undefined) {
+                    rows.push(`<div>deltaRate: <b>${escapeHtml(Number(cell.deltaRate || 0).toFixed(3))}</b></div>`);
+                }
+                return rows.join("");
+            }
+        },
+        legend: {
+            show: true,
+            top: 12,
+            left: 14,
+            itemWidth: 12,
+            itemHeight: 8,
+            icon: "roundRect",
+            textStyle: {
+                color: "#30475a",
+                fontSize: 12
+            }
+        },
+        grid: {
+            left: 58,
+            right: 68,
+            top: 56,
+            bottom: 42,
+            containLabel: false
+        },
+        xAxis: {
+            type: "category",
+            boundaryGap: false,
+            data: trend.labels,
+            axisTick: {
+                alignWithLabel: true
+            },
+            axisLine: {
+                lineStyle: {
+                    color: "rgba(136, 163, 183, 0.3)"
+                }
+            },
+            axisLabel: {
+                color: "#667888",
+                fontSize: 11,
+                margin: 12,
+                interval: 0,
+                rotate: trend.labels.length > 8 ? 25 : 0,
+                formatter: (value) => String(value)
+            },
+            splitLine: {
+                show: false
+            }
+        },
+        yAxis: [
+            {
+                type: "value",
+                name: "vehicleDensity",
+                nameTextStyle: {
+                    color: "#667888",
+                    fontSize: 11,
+                    padding: [0, 0, 0, 6]
+                },
+                axisLabel: {
+                    color: "#667888",
+                    fontSize: 11
+                },
+                splitLine: {
+                    lineStyle: {
+                        color: "rgba(136, 163, 183, 0.16)"
+                    }
+                }
+            },
+            {
+                type: "value",
+                name: "vehicleCount",
+                position: "right",
+                nameTextStyle: {
+                    color: "#667888",
+                    fontSize: 11,
+                    padding: [0, 6, 0, 0]
+                },
+                axisLabel: {
+                    color: "#667888",
+                    fontSize: 11
+                },
+                splitLine: {
+                    show: false
+                }
+            }
+        ],
+        series: [
+            {
+                name: "vehicleDensity",
+                type: "line",
+                smooth: true,
+                showSymbol: true,
+                symbolSize: 7,
+                yAxisIndex: 0,
+                data: trend.densityValues,
+                connectNulls: false,
+                lineStyle: {
+                    width: 3,
+                    color: "#2fb9b1"
+                },
+                itemStyle: {
+                    color: "#2fb9b1"
+                },
+                areaStyle: {
+                    color: "rgba(47, 185, 177, 0.08)"
+                },
+                emphasis: {
+                    focus: "series"
+                }
+            },
+            {
+                name: "vehicleCount",
+                type: "line",
+                smooth: true,
+                showSymbol: true,
+                symbolSize: 7,
+                yAxisIndex: 1,
+                data: trend.countValues,
+                connectNulls: false,
+                lineStyle: {
+                    width: 3,
+                    color: "#6ab5f4"
+                },
+                itemStyle: {
+                    color: "#6ab5f4"
+                },
+                emphasis: {
+                    focus: "series"
+                }
+            }
+        ],
+        graphic: trend.hasData ? [] : {
+            type: "text",
+            left: "center",
+            top: "middle",
+            style: {
+                text: "暂无可用趋势数据",
+                fill: "rgba(102, 120, 136, 0.82)",
+                fontSize: 14,
+                fontWeight: 600
+            }
+        }
+    };
 }
 
 function pointToOverlayPixel(lon, lat) {
@@ -590,6 +851,314 @@ function pointToOverlayPixel(lon, lat) {
 
 function pixelToPoint(x, y) {
     return state.map.pixelToPoint(new BMap.Pixel(x, y));
+}
+
+function getDensityGridModel() {
+    if (state.densityRenderModel) {
+        return state.densityRenderModel;
+    }
+    if (!state.densityResult) {
+        return null;
+    }
+
+    const minLon = Number(state.densityResult.minLon);
+    const minLat = Number(state.densityResult.minLat);
+    const maxLon = Number(state.densityResult.maxLon);
+    const maxLat = Number(state.densityResult.maxLat);
+    const lonStep = Number(state.densityResult.lonStep);
+    const latStep = Number(state.densityResult.latStep);
+    const columnCount = Number(state.densityResult.columnCount || 0);
+    const rowCount = Number(state.densityResult.rowCount || 0);
+
+    if (!Number.isFinite(minLon) || !Number.isFinite(minLat) ||
+        !Number.isFinite(maxLon) || !Number.isFinite(maxLat) ||
+        !Number.isFinite(lonStep) || !Number.isFinite(latStep) ||
+        lonStep <= 0 || latStep <= 0 || columnCount <= 0 || rowCount <= 0) {
+        return null;
+    }
+
+    const chunkCellSize = DENSITY_CHUNK_CELL_SIZE;
+    const chunkColumnCount = Math.max(1, Math.ceil(columnCount / chunkCellSize));
+    const chunkRowCount = Math.max(1, Math.ceil(rowCount / chunkCellSize));
+    const chunkLookup = new Map();
+    const chunks = [];
+
+    for (let chunkY = 0; chunkY < chunkRowCount; chunkY += 1) {
+        for (let chunkX = 0; chunkX < chunkColumnCount; chunkX += 1) {
+            const minGx = chunkX * chunkCellSize;
+            const minGy = chunkY * chunkCellSize;
+            const maxGx = Math.min(columnCount - 1, minGx + chunkCellSize - 1);
+            const maxGy = Math.min(rowCount - 1, minGy + chunkCellSize - 1);
+            const chunkKey = `${chunkX}:${chunkY}`;
+            const chunk = {
+                key: chunkKey,
+                chunkX,
+                chunkY,
+                minGx,
+                minGy,
+                maxGx,
+                maxGy,
+                minLon: minLon + minGx * lonStep,
+                minLat: minLat + minGy * latStep,
+                maxLon: Math.min(minLon + (maxGx + 1) * lonStep, maxLon),
+                maxLat: Math.min(minLat + (maxGy + 1) * latStep, maxLat)
+            };
+            chunks.push(chunk);
+            chunkLookup.set(chunkKey, chunk);
+        }
+    }
+
+    state.densityRenderModel = {
+        minLon,
+        minLat,
+        maxLon,
+        maxLat,
+        lonStep,
+        latStep,
+        columnCount,
+        rowCount,
+        chunkCellSize,
+        chunkColumnCount,
+        chunkRowCount,
+        chunkLookup,
+        chunks
+    };
+    return state.densityRenderModel;
+}
+
+function clearDensityChunkCache() {
+    state.densityChunkCache.clear();
+    state.densityChunkAccessTick = 0;
+}
+
+function buildDensityChunkMaps() {
+    const model = getDensityGridModel();
+    const buckets = state.densityResult?.buckets || [];
+    if (!model || buckets.length === 0) {
+        state.densityChunkMaps = [];
+        clearDensityChunkCache();
+        return;
+    }
+
+    state.densityChunkMaps = buckets.map((bucket) => {
+        const map = new Map();
+        for (const cell of bucket.cells || []) {
+            const chunkX = Math.floor(Number(cell.gx || 0) / model.chunkCellSize);
+            const chunkY = Math.floor(Number(cell.gy || 0) / model.chunkCellSize);
+            const chunkKey = `${chunkX}:${chunkY}`;
+            let chunkCells = map.get(chunkKey);
+            if (!chunkCells) {
+                chunkCells = new Map();
+                map.set(chunkKey, chunkCells);
+            }
+            chunkCells.set(`${cell.gx}:${cell.gy}`, cell);
+        }
+        return map;
+    });
+    clearDensityChunkCache();
+}
+
+function getDensityCellBoundsFromGrid(gx, gy, grid = getDensityGridModel()) {
+    if (!grid) {
+        return null;
+    }
+
+    const cellMinLon = grid.minLon + gx * grid.lonStep;
+    const cellMinLat = grid.minLat + gy * grid.latStep;
+    return {
+        minLon: cellMinLon,
+        minLat: cellMinLat,
+        maxLon: Math.min(cellMinLon + grid.lonStep, grid.maxLon),
+        maxLat: Math.min(cellMinLat + grid.latStep, grid.maxLat)
+    };
+}
+
+function getDensityChunkCells(bucketIndex, chunkKey) {
+    return state.densityChunkMaps[bucketIndex]?.get(chunkKey) || null;
+}
+
+function getDensityChunkCacheKey(bucketIndex, zoom, dpr, chunkKey) {
+    return `${bucketIndex}|${zoom}|${dpr}|${chunkKey}`;
+}
+
+function getDensityChunkRange() {
+    const grid = getDensityGridModel();
+    if (!grid || !state.map || typeof state.map.getBounds !== "function") {
+        return null;
+    }
+
+    const bounds = state.map.getBounds();
+    if (!bounds || typeof bounds.getSouthWest !== "function" || typeof bounds.getNorthEast !== "function") {
+        return null;
+    }
+
+    const sw = bounds.getSouthWest();
+    const ne = bounds.getNorthEast();
+    const viewMinLon = Math.max(grid.minLon, sw.lng);
+    const viewMaxLon = Math.min(grid.maxLon, ne.lng);
+    const viewMinLat = Math.max(grid.minLat, sw.lat);
+    const viewMaxLat = Math.min(grid.maxLat, ne.lat);
+    if (viewMinLon >= viewMaxLon || viewMinLat >= viewMaxLat) {
+        return null;
+    }
+
+    const minGx = Math.max(0, Math.floor((viewMinLon - grid.minLon) / grid.lonStep));
+    const maxGx = Math.min(grid.columnCount - 1, Math.ceil((viewMaxLon - grid.minLon) / grid.lonStep) - 1);
+    const minGy = Math.max(0, Math.floor((viewMinLat - grid.minLat) / grid.latStep));
+    const maxGy = Math.min(grid.rowCount - 1, Math.ceil((viewMaxLat - grid.minLat) / grid.latStep) - 1);
+    if (maxGx < minGx || maxGy < minGy) {
+        return null;
+    }
+
+    const minChunkX = Math.max(0, Math.floor(minGx / grid.chunkCellSize) - DENSITY_CHUNK_PREFETCH_MARGIN);
+    const maxChunkX = Math.min(grid.chunkColumnCount - 1, Math.floor(maxGx / grid.chunkCellSize) + DENSITY_CHUNK_PREFETCH_MARGIN);
+    const minChunkY = Math.max(0, Math.floor(minGy / grid.chunkCellSize) - DENSITY_CHUNK_PREFETCH_MARGIN);
+    const maxChunkY = Math.min(grid.chunkRowCount - 1, Math.floor(maxGy / grid.chunkCellSize) + DENSITY_CHUNK_PREFETCH_MARGIN);
+
+    return {
+        minChunkX,
+        maxChunkX,
+        minChunkY,
+        maxChunkY
+    };
+}
+
+function getDensityVisibleChunks() {
+    const grid = getDensityGridModel();
+    const range = getDensityChunkRange();
+    if (!grid || !range) {
+        return [];
+    }
+
+    const chunks = [];
+    for (let chunkY = range.minChunkY; chunkY <= range.maxChunkY; chunkY += 1) {
+        for (let chunkX = range.minChunkX; chunkX <= range.maxChunkX; chunkX += 1) {
+            const chunk = grid.chunkLookup.get(`${chunkX}:${chunkY}`);
+            if (chunk) {
+                chunks.push(chunk);
+            }
+        }
+    }
+    return chunks;
+}
+
+function evictDensityChunkCacheIfNeeded() {
+    if (state.densityChunkCache.size <= DENSITY_CHUNK_CACHE_LIMIT) {
+        return;
+    }
+
+    const entries = Array.from(state.densityChunkCache.entries());
+    entries.sort((a, b) => {
+        const scoreA = (a[1].useCount * 10) + a[1].lastUsedTick;
+        const scoreB = (b[1].useCount * 10) + b[1].lastUsedTick;
+        return scoreA - scoreB;
+    });
+
+    while (state.densityChunkCache.size > DENSITY_CHUNK_CACHE_LIMIT && entries.length > 0) {
+        const [key] = entries.shift();
+        state.densityChunkCache.delete(key);
+    }
+}
+
+function renderDensityChunkToCanvas(ctx, grid, bucketIndex, chunk) {
+    const chunkCells = getDensityChunkCells(bucketIndex, chunk.key);
+    const chunkTopLeft = pointToOverlayPixel(chunk.minLon, chunk.maxLat);
+    const chunkBottomRight = pointToOverlayPixel(chunk.maxLon, chunk.minLat);
+    const width = Math.max(1, Math.ceil(Math.abs(chunkBottomRight.x - chunkTopLeft.x)));
+    const height = Math.max(1, Math.ceil(Math.abs(chunkBottomRight.y - chunkTopLeft.y)));
+    const cellMap = chunkCells || new Map();
+
+    ctx.save();
+    ctx.lineJoin = "miter";
+    ctx.lineCap = "square";
+    const baseStrokeStyle = "rgba(136, 163, 183, 0.28)";
+    const heatBorderStyle = "rgba(80, 146, 176, 0.38)";
+    const hotBorderStyle = "rgba(214, 71, 64, 0.70)";
+    ctx.lineWidth = 1;
+
+    for (let gy = chunk.minGy; gy <= chunk.maxGy; gy += 1) {
+        for (let gx = chunk.minGx; gx <= chunk.maxGx; gx += 1) {
+            const bounds = getDensityCellBoundsFromGrid(gx, gy, grid);
+            if (!bounds) {
+                continue;
+            }
+
+            const topLeft = pointToOverlayPixel(bounds.minLon, bounds.maxLat);
+            const bottomRight = pointToOverlayPixel(bounds.maxLon, bounds.minLat);
+            const centerX = (topLeft.x + bottomRight.x) * 0.5;
+            const centerY = (topLeft.y + bottomRight.y) * 0.5;
+            const drawWidth = Math.max(1, Math.abs(bottomRight.x - topLeft.x));
+            const drawHeight = Math.max(1, Math.abs(bottomRight.y - topLeft.y));
+            const left = Math.round(centerX - drawWidth * 0.5);
+            const top = Math.round(centerY - drawHeight * 0.5);
+            const localLeft = left - chunkTopLeft.x;
+            const localTop = top - chunkTopLeft.y;
+
+            ctx.strokeStyle = baseStrokeStyle;
+            ctx.strokeRect(localLeft + 0.5, localTop + 0.5, Math.max(0, Math.round(drawWidth) - 1), Math.max(0, Math.round(drawHeight) - 1));
+
+            const cell = cellMap.get(`${gx}:${gy}`);
+            if (cell) {
+                const ratio = getDensityRatio(cell);
+                ctx.fillStyle = getHeatColor(ratio);
+                ctx.fillRect(localLeft, localTop, drawWidth, drawHeight);
+                ctx.strokeStyle = ratio > 0.72 ? hotBorderStyle : heatBorderStyle;
+                ctx.strokeRect(localLeft + 0.5, localTop + 0.5, Math.max(0, Math.round(drawWidth) - 1), Math.max(0, Math.round(drawHeight) - 1));
+            }
+        }
+    }
+
+    ctx.restore();
+    return { width, height, topLeft: chunkTopLeft };
+}
+
+function getDensityChunkRender(bucketIndex, chunk) {
+    const grid = getDensityGridModel();
+    if (!grid || !state.map || !state.densityOverlay) {
+        return null;
+    }
+
+    const zoom = state.map.getZoom();
+    const dpr = state.densityOverlay._dpr || window.devicePixelRatio || 1;
+    const cacheKey = getDensityChunkCacheKey(bucketIndex, zoom, dpr, chunk.key);
+    const existing = state.densityChunkCache.get(cacheKey);
+    if (existing) {
+        existing.useCount += 1;
+        existing.lastUsedTick = ++state.densityChunkAccessTick;
+        return existing;
+    }
+
+    const chunkTopLeft = pointToOverlayPixel(chunk.minLon, chunk.maxLat);
+    const chunkBottomRight = pointToOverlayPixel(chunk.maxLon, chunk.minLat);
+    const cssWidth = Math.max(1, Math.ceil(Math.abs(chunkBottomRight.x - chunkTopLeft.x)));
+    const cssHeight = Math.max(1, Math.ceil(Math.abs(chunkBottomRight.y - chunkTopLeft.y)));
+    const canvas = document.createElement("canvas");
+    const pixelWidth = Math.max(1, Math.round(cssWidth * dpr));
+    const pixelHeight = Math.max(1, Math.round(cssHeight * dpr));
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+    canvas.style.width = `${cssWidth}px`;
+    canvas.style.height = `${cssHeight}px`;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+        return null;
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, cssWidth, cssHeight);
+    renderDensityChunkToCanvas(ctx, grid, bucketIndex, chunk);
+
+    const entry = {
+        canvas,
+        width: cssWidth,
+        height: cssHeight,
+        useCount: 1,
+        lastUsedTick: ++state.densityChunkAccessTick
+    };
+    state.densityChunkCache.set(cacheKey, entry);
+    evictDensityChunkCacheIfNeeded();
+    return entry;
 }
 
 function parseDensityCellKey(key) {
@@ -639,6 +1208,11 @@ function getDensityCellByKey(bucketIndex, key) {
 function getDensityCellBounds(cell) {
     if (!state.densityResult || !cell) {
         return null;
+    }
+
+    const grid = getDensityGridModel();
+    if (grid && Number.isInteger(Number(cell.gx)) && Number.isInteger(Number(cell.gy))) {
+        return getDensityCellBoundsFromGrid(Number(cell.gx), Number(cell.gy), grid);
     }
 
     // 优先使用后端显式返回的网格边界，避免前端重算带来的累计误差。
@@ -903,81 +1477,70 @@ function getBucketLabel(bucket) {
     return `${formatDateTime(bucket.startTime)} - ${formatDateTime(bucket.endTime)}`;
 }
 
-function clearDensityTrendCanvas() {
-    if (!state.densityTrendCanvas || !state.densityTrendCtx) {
-        return;
-    }
-    const rect = state.densityTrendCanvas.getBoundingClientRect();
-    state.densityTrendCtx.clearRect(0, 0, rect.width, rect.height);
+function getSelectedCellTrendData(cellKey) {
+    const buckets = state.densityResult?.buckets || [];
+    return buckets.map((bucket, index) => {
+        const cell = state.densityCellMaps[index]?.get(cellKey) || null;
+        const fallbackCell = {
+            vehicleCount: 0,
+            vehicleDensity: 0,
+            pointCount: 0,
+            flowIntensity: 0,
+            deltaVehicleCount: 0,
+            deltaVehicleDensity: 0,
+            deltaRate: 0
+        };
+        return {
+            bucket,
+            cell: cell || fallbackCell,
+            hasCell: Boolean(cell)
+        };
+    });
 }
 
 function renderSelectedCellTrend() {
-    clearDensityTrendCanvas();
-    if (!state.densityResult || !state.densitySelectedCellKey || !state.densityTrendCtx || !state.densityTrendCanvas) {
+    ensureDensityTrendChart();
+    if (!state.densityTrendChart) {
         return;
     }
 
-    const values = state.densityResult.buckets.map((_, index) => {
-        const cell = state.densityCellMaps[index]?.get(state.densitySelectedCellKey);
-        return Number(cell?.vehicleDensity || 0);
-    });
-
-    const maxValue = Math.max(0, ...values);
-    const rect = state.densityTrendCanvas.getBoundingClientRect();
-    const width = rect.width;
-    const height = rect.height;
-    const padding = 18;
-
-    state.densityTrendCtx.strokeStyle = "rgba(136, 163, 183, 0.35)";
-    state.densityTrendCtx.lineWidth = 1;
-    state.densityTrendCtx.beginPath();
-    state.densityTrendCtx.moveTo(padding, height - padding);
-    state.densityTrendCtx.lineTo(width - padding, height - padding);
-    state.densityTrendCtx.moveTo(padding, padding);
-    state.densityTrendCtx.lineTo(padding, height - padding);
-    state.densityTrendCtx.stroke();
-
-    if (values.length <= 0) {
+    if (!state.densityResult || !state.densitySelectedCellKey) {
+        clearDensityTrendChart();
         return;
     }
 
-    const stepX = values.length === 1 ? 0 : (width - padding * 2) / (values.length - 1);
-    state.densityTrendCtx.strokeStyle = "rgba(54, 150, 142, 0.92)";
-    state.densityTrendCtx.lineWidth = 2;
-    state.densityTrendCtx.beginPath();
-    values.forEach((value, index) => {
-        const x = padding + stepX * index;
-        const ratio = maxValue <= 0 ? 0 : value / maxValue;
-        const y = height - padding - ratio * (height - padding * 2);
-        if (index === 0) {
-            state.densityTrendCtx.moveTo(x, y);
-        } else {
-            state.densityTrendCtx.lineTo(x, y);
-        }
-    });
-    state.densityTrendCtx.stroke();
+    const trendPoints = getSelectedCellTrendData(state.densitySelectedCellKey);
+    if (!trendPoints.length) {
+        clearDensityTrendChart();
+        return;
+    }
 
-    values.forEach((value, index) => {
-        const x = padding + stepX * index;
-        const ratio = maxValue <= 0 ? 0 : value / maxValue;
-        const y = height - padding - ratio * (height - padding * 2);
-        state.densityTrendCtx.fillStyle = index === state.currentBucketIndex
-            ? "rgba(223, 79, 73, 0.95)"
-            : "rgba(54, 150, 142, 0.9)";
-        state.densityTrendCtx.beginPath();
-        state.densityTrendCtx.arc(x, y, 3, 0, Math.PI * 2);
-        state.densityTrendCtx.fill();
-    });
+    const labels = trendPoints.map(({ bucket }) => getBucketLabel(bucket));
+    const densityValues = trendPoints.map(({ cell }) => Number(cell?.vehicleDensity || 0));
+    const countValues = trendPoints.map(({ cell }) => Number(cell?.vehicleCount || 0));
+    const cells = trendPoints.map(({ cell }) => cell);
+    const hasData = trendPoints.some(({ hasCell }) => hasCell);
+
+    state.densityTrendChart.setOption(buildDensityTrendOption({
+        labels,
+        densityValues,
+        countValues,
+        cells,
+        hasData
+    }), true);
 }
 
 function buildDensityCellMaps() {
-    state.densityCellMaps = (state.densityResult?.buckets || []).map((bucket) => {
+    const buckets = state.densityResult?.buckets || [];
+    state.densityRenderModel = null;
+    state.densityCellMaps = buckets.map((bucket) => {
         const map = new Map();
         for (const cell of bucket.cells || []) {
             map.set(`${cell.gx}:${cell.gy}`, cell);
         }
         return map;
     });
+    buildDensityChunkMaps();
 }
 
 function updateDensityTimeLabel() {
@@ -1401,32 +1964,23 @@ async function runAllTaxiQuery(enableMode = true) {
 }
 
 function tryGetCellByPoint(point) {
-    if (!state.densityResult || !point) {
+    const grid = getDensityGridModel();
+    if (!grid || !point) {
         return null;
     }
 
-    const minLon = Number(state.densityResult.minLon);
-    const minLat = Number(state.densityResult.minLat);
-    const maxLon = Number(state.densityResult.maxLon);
-    const maxLat = Number(state.densityResult.maxLat);
-    const lonStep = Number(state.densityResult.lonStep);
-    const latStep = Number(state.densityResult.latStep);
-
-    if (!Number.isFinite(minLon) || !Number.isFinite(minLat) ||
-        !Number.isFinite(maxLon) || !Number.isFinite(maxLat) ||
-        !Number.isFinite(lonStep) || !Number.isFinite(latStep) ||
-        point.lng < minLon || point.lng > maxLon ||
-        point.lat < minLat || point.lat > maxLat) {
+    if (point.lng < grid.minLon || point.lng > grid.maxLon ||
+        point.lat < grid.minLat || point.lat > grid.maxLat) {
         return null;
     }
 
     const gx = Math.max(0, Math.min(
-        Number(state.densityResult.columnCount || 1) - 1,
-        Math.floor((point.lng - minLon) / lonStep)
+        grid.columnCount - 1,
+        Math.floor((point.lng - grid.minLon) / grid.lonStep)
     ));
     const gy = Math.max(0, Math.min(
-        Number(state.densityResult.rowCount || 1) - 1,
-        Math.floor((point.lat - minLat) / latStep)
+        grid.rowCount - 1,
+        Math.floor((point.lat - grid.minLat) / grid.latStep)
     ));
 
     const key = `${gx}:${gy}`;
@@ -1487,7 +2041,7 @@ function installDensityMapInteractions() {
         if (!hit) {
             state.densitySelectedCellKey = null;
             updateTrendSummary(null, null);
-            clearDensityTrendCanvas();
+            clearDensityTrendChart();
             drawDensityBucket();
             return;
         }

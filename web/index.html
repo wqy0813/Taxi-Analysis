@@ -147,7 +147,7 @@
                                 <div id="density-time-label" class="hint">-</div>
                                 <div id="density-info" class="info-panel empty">等待查询</div>
                                 <div id="density-trend-summary" class="info-panel empty">点击网格查看趋势</div>
-                                <canvas id="density-trend-canvas" class="density-trend-canvas"></canvas>
+                                <div id="density-trend-chart" class="density-trend-chart" role="img" aria-label="密度趋势图"></div>
                             </div>
                         </div>
                     </div>
@@ -205,8 +205,9 @@
                 <div id="selection-box"></div>
             </div>
         </section>
-    </main>
+</main>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
 <script src="https://api.map.baidu.com/library/PointCollection/1.4/src/PointCollection_min.js"></script>
 <script src="./app.js"></script>
 </body>
