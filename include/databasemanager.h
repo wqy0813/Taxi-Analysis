@@ -1,39 +1,46 @@
 #ifndef DATABASEMANAGER_H
 #define DATABASEMANAGER_H
 
-#include <QSqlDatabase>
-#include <QString>
-#include <QtGlobal>
+#include <cstdint>
+#include <string>
 #include <vector>
+
 #include "datamanager.h"
+
+struct sqlite3;
 
 class DatabaseManager {
 public:
-    explicit DatabaseManager(const QString &dbName = "taxi_data.db");
+    explicit DatabaseManager(const std::string& dbName = "taxi_data.db");
     ~DatabaseManager();
+
+    DatabaseManager(const DatabaseManager&) = delete;
+    DatabaseManager& operator=(const DatabaseManager&) = delete;
 
     bool open();
     bool batchInsert(const std::vector<GPSPoint>& points);
-    qint64 getPointCount();
+    std::int64_t getPointCount();
     std::vector<GPSPoint> getTrajectoryByTaxiId(int taxiId);
     std::vector<GPSPoint> getAllPointsForDisplay(int maxPoints);
-    qint64 countUniqueTaxisInBoundsAndTime(qint64 startTime,
-                                           qint64 endTime,
-                                           double minLon,
-                                           double minLat,
-                                           double maxLon,
-                                           double maxLat);
-    bool getDatasetBounds(qint64 &minTime,
-                          qint64 &maxTime,
-                          double &minLon,
-                          double &minLat,
-                          double &maxLon,
-                          double &maxLat);
-    static void checkAndImportData(DatabaseManager &dbm, const AppConfig& config);
-    QSqlDatabase getQSqlDatabase();
+    std::int64_t countUniqueTaxisInBoundsAndTime(std::int64_t startTime,
+                                                 std::int64_t endTime,
+                                                 double minLon,
+                                                 double minLat,
+                                                 double maxLon,
+                                                 double maxLat);
+    bool getDatasetBounds(std::int64_t& minTime,
+                          std::int64_t& maxTime,
+                          double& minLon,
+                          double& minLat,
+                          double& maxLon,
+                          double& maxLat);
+    static void checkAndImportData(DatabaseManager& dbm, const AppConfig& config);
+
+    sqlite3* getRawHandle() const;
+
 private:
-    QSqlDatabase db;
-    QString connectionName;
+    sqlite3* db = nullptr;
+    std::string dbPath;
 };
 
-#endif // DATABASEMANAGER_H
+#endif

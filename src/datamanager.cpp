@@ -1,19 +1,19 @@
 #include "datamanager.h"
 #include "databasemanager.h"
 
-#include <QDateTime>
-#include <QDebug>
-#include <QDirIterator>
-#include <QFile>
-#include <QSqlError>
-#include <QSqlQuery>
-#include <QTextStream>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <limits>
+#include <sstream>
+#include <string>
 #include <unordered_set>
-
+#include "logger.h"
 std::vector<GPSPoint> DataManager::allPoints;
 std::unordered_map<int, VehicleRange> DataManager::idToRange;
 std::unique_ptr<QuadNode> DataManager::quadTreeRoot = nullptr;
@@ -32,8 +32,8 @@ struct GridKey {
 
 struct GridKeyHash {
     std::size_t operator()(const GridKey& key) const {
-        std::size_t h1 = std::hash<int>()(key.x);
-        std::size_t h2 = std::hash<int>()(key.y);
+        const std::size_t h1 = std::hash<int>()(key.x);
+        const std::size_t h2 = std::hash<int>()(key.y);
         return h1 ^ (h2 << 1);
     }
 };
@@ -84,8 +84,8 @@ std::vector<ClusterPoint> buildClustersWithGrid(const std::vector<GPSPoint>& poi
             continue;
         }
 
-        int gx = static_cast<int>(std::floor((p.lon - minLon) / gridSize));
-        int gy = static_cast<int>(std::floor((p.lat - minLat) / gridSize));
+        const int gx = static_cast<int>(std::floor((p.lon - minLon) / gridSize));
+        const int gy = static_cast<int>(std::floor((p.lat - minLat) / gridSize));
 
         GridKey key{gx, gy};
         auto& bucket = buckets[key];
@@ -142,53 +142,74 @@ std::vector<ClusterPoint> buildClustersWithGrid(const std::vector<GPSPoint>& poi
     return result;
 }
 
+std::string trim(const std::string& input) {
+    std::size_t left = 0;
+    while (left < input.size() && std::isspace(static_cast<unsigned char>(input[left]))) {
+        ++left;
+    }
+
+    std::size_t right = input.size();
+    while (right > left && std::isspace(static_cast<unsigned char>(input[right - 1]))) {
+        --right;
+    }
+
+    return input.substr(left, right - left);
+}
+
+long long parseTimestamp(const std::string& text) {
+    std::tm tm{};
+    std::istringstream iss(text);
+    iss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+    if (iss.fail()) {
+        return 0;
+    }
+
+#if defined(_WIN32)
+    return static_cast<long long>(_mkgmtime(&tm));
+#else
+    return static_cast<long long>(timegm(&tm));
+#endif
+}
+
 } // namespace
 
 bool DataManager::loadAllPoints(DatabaseManager& dbm) {
     allPoints.clear();
     idToRange.clear();
 
-    QSqlDatabase db = dbm.getQSqlDatabase();
-    if (!db.isOpen()) {
-        qDebug() << "数据库未打开，无法加载点数据";
+    sqlite3* db = dbm.getRawHandle();
+    if (db == nullptr) {
+        Debug() << "数据库未打开，无法加载点数据" ;
         return false;
     }
 
-    qint64 totalCount = dbm.getPointCount();
+    const std::int64_t totalCount = dbm.getPointCount();
     if (totalCount <= 0) {
-        qDebug() << "数据库中没有点数据";
+        Debug() << "数据库中没有点数据" ;
         return true;
     }
 
-    allPoints.reserve(static_cast<size_t>(totalCount));
+    allPoints.reserve(static_cast<std::size_t>(totalCount));
 
-    QSqlQuery query(db);
-    query.setForwardOnly(true);
-
-    const QString sql = R"(
-        SELECT id, time, lon, lat
-        FROM taxi_points
-        ORDER BY id ASC, time ASC
-    )";
-
-    if (!query.exec(sql)) {
-        qDebug() << "读取点数据失败:" << query.lastError().text();
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT id, time, lon, lat FROM taxi_points ORDER BY id ASC, time ASC;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        Debug() << "读取点数据失败: " << sqlite3_errmsg(db) ;
         return false;
     }
 
-    qint64 loadedCount = 0;
-
+    std::int64_t loadedCount = 0;
     int currentId = -1;
     int rangeStart = -1;
 
-    while (query.next()) {
-        GPSPoint p;
-        p.id = query.value(0).toInt();
-        p.timestamp = query.value(1).toLongLong();
-        p.lon = query.value(2).toDouble();
-        p.lat = query.value(3).toDouble();
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        GPSPoint p{};
+        p.id = sqlite3_column_int(stmt, 0);
+        p.timestamp = static_cast<long long>(sqlite3_column_int64(stmt, 1));
+        p.lon = sqlite3_column_double(stmt, 2);
+        p.lat = sqlite3_column_double(stmt, 3);
 
-        int currentIndex = static_cast<int>(allPoints.size());
+        const int currentIndex = static_cast<int>(allPoints.size());
 
         if (currentId != -1 && p.id != currentId) {
             idToRange[currentId] = {rangeStart, currentIndex - 1};
@@ -206,17 +227,19 @@ bool DataManager::loadAllPoints(DatabaseManager& dbm) {
         ++loadedCount;
 
         if (loadedCount % 1000000 == 0) {
-            qDebug() << "已加载" << loadedCount << "个点到内存...";
+            Debug() << "已加载 " << loadedCount << " 个点到内存..." ;
         }
     }
+
+    sqlite3_finalize(stmt);
 
     if (!allPoints.empty() && currentId != -1) {
         idToRange[currentId] = {rangeStart, static_cast<int>(allPoints.size()) - 1};
     }
 
-    qDebug() << "全部点加载完成，共" << loadedCount << "个点";
-    qDebug() << "当前 allPoints 已按 id 递增、time 递增排列";
-    qDebug() << "共建立" << idToRange.size() << "个车辆区间映射";
+    Debug() << "全部点加载完成，共 " << loadedCount << " 个点" ;
+    Debug() << "当前 allPoints 已按 id 递增、time 递增排列" ;
+    Debug() << "共建立 " << idToRange.size() << " 个车辆区间映射" ;
 
     return true;
 }
@@ -233,84 +256,100 @@ void DataManager::loadTxtFiles(const AppConfig& config) {
     quadTreeRoot.reset();
     exceptionalNodes.clear();
 
-    qDebug() << "正在扫描文件夹:" << config.dataDir << "(文件较多，请稍候...)";
-    qDebug() << "开始解析文件内容...";
-    qDebug() << "过滤范围:"
-             << "lon(" << config.minLon << "," << config.maxLon << "),"
-             << "lat(" << config.minLat << "," << config.maxLat << ")";
-
-    QDirIterator it(config.dataDir,
-                    QStringList() << "*.txt",
-                    QDir::Files,
-                    QDirIterator::Subdirectories);
+    Debug() << "正在扫描文件夹: " << config.dataDir << " (文件较多，请稍候...)" ;
+    Debug() << "开始解析文件内容..." ;
+    Debug() << "过滤范围: "
+              << "lon(" << config.minLon << "," << config.maxLon << "), "
+              << "lat(" << config.minLat << "," << config.maxLat << ")" ;
 
     int fileCount = 0;
     int validCount = 0;
     int invalidTimeCount = 0;
     int invalidLineCount = 0;
 
-    while (it.hasNext()) {
-        QFile file(it.next());
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(config.dataDir)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".txt") {
+            continue;
+        }
 
-        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            QTextStream in(&file);
+        std::ifstream fin(entry.path());
+        if (!fin.is_open()) {
+            continue;
+        }
 
-            while (!in.atEnd()) {
-                QString line = in.readLine().trimmed();
-                if (line.isEmpty()) {
-                    continue;
-                }
-
-                QStringList parts = line.split(',');
-                if (parts.size() < 4) {
-                    ++invalidLineCount;
-                    continue;
-                }
-
-                GPSPoint p;
-                p.id = parts[0].toInt();
-
-                QDateTime dt = QDateTime::fromString(parts[1], "yyyy-MM-dd HH:mm:ss");
-                if (!dt.isValid()) {
-                    ++invalidTimeCount;
-                    continue;
-                }
-
-                p.timestamp = dt.toSecsSinceEpoch();
-                p.lon = parts[2].toDouble();
-                p.lat = parts[3].toDouble();
-
-                if (p.lon > config.minLon && p.lon < config.maxLon &&
-                    p.lat > config.minLat && p.lat < config.maxLat) {
-                    allPoints.push_back(p);
-                    ++validCount;
-                }
+        std::string line;
+        while (std::getline(fin, line)) {
+            line = trim(line);
+            if (line.empty()) {
+                continue;
             }
 
-            file.close();
+            std::stringstream ss(line);
+            std::string idStr;
+            std::string timeStr;
+            std::string lonStr;
+            std::string latStr;
+
+            if (!std::getline(ss, idStr, ',')) {
+                ++invalidLineCount;
+                continue;
+            }
+            if (!std::getline(ss, timeStr, ',')) {
+                ++invalidLineCount;
+                continue;
+            }
+            if (!std::getline(ss, lonStr, ',')) {
+                ++invalidLineCount;
+                continue;
+            }
+            if (!std::getline(ss, latStr, ',')) {
+                ++invalidLineCount;
+                continue;
+            }
+
+            GPSPoint p{};
+            try {
+                p.id = std::stoi(idStr);
+                p.timestamp = parseTimestamp(timeStr);
+                p.lon = std::stod(lonStr);
+                p.lat = std::stod(latStr);
+            } catch (...) {
+                ++invalidLineCount;
+                continue;
+            }
+
+            if (p.timestamp == 0) {
+                ++invalidTimeCount;
+                continue;
+            }
+
+            if (p.lon > config.minLon && p.lon < config.maxLon &&
+                p.lat > config.minLat && p.lat < config.maxLat) {
+                allPoints.push_back(p);
+                ++validCount;
+            }
         }
 
         ++fileCount;
         if (fileCount % config.batchSize == 0) {
-            qDebug() << "已读取" << fileCount << "个文件..."
-                     << "当前有效点数:" << validCount;
+            Debug() << "已读取 " << fileCount << " 个文件... 当前有效点数: " << validCount ;
         }
     }
 
-    qDebug() << "读取完成。";
-    qDebug() << "总文件数:" << fileCount;
-    qDebug() << "有效点数:" << allPoints.size();
-    qDebug() << "无效行数:" << invalidLineCount;
-    qDebug() << "无效时间数:" << invalidTimeCount;
+    Debug() << "读取完成。" ;
+    Debug() << "总文件数: " << fileCount ;
+    Debug() << "有效点数: " << allPoints.size() ;
+    Debug() << "无效行数: " << invalidLineCount ;
+    Debug() << "无效时间数: " << invalidTimeCount ;
 }
 
 void DataManager::buildQuadTree(const AppConfig& config) {
     quadTreeRoot.reset();
     exceptionalNodes.clear();
 
-    int capacity = config.rectCapacity;
+    const int capacity = config.rectCapacity;
     if (allPoints.empty()) {
-        qDebug() << "buildQuadTree: allPoints 为空，无法建立四叉树";
+        Debug() << "buildQuadTree: allPoints 为空，无法建立四叉树" ;
         return;
     }
 
@@ -325,11 +364,10 @@ void DataManager::buildQuadTree(const AppConfig& config) {
         capacity,
         0,
         config.maxQuadTreeDepth,
-        config.minQuadCellSize
-        );
+        config.minQuadCellSize);
 
-    qDebug() << "开始建立四叉树，总点数:" << allPoints.size()
-             << "节点容量:" << capacity;
+    Debug() << "开始建立四叉树，总点数: " << allPoints.size()
+              << " 节点容量: " << capacity ;
 
     int insertedCount = 0;
     int failedCount = 0;
@@ -342,20 +380,20 @@ void DataManager::buildQuadTree(const AppConfig& config) {
         }
 
         if ((i + 1) % 1000000 == 0) {
-            qDebug() << "四叉树插入进度:" << (i + 1)
-                     << "/" << allPoints.size();
+            Debug() << "四叉树插入进度: " << (i + 1)
+                      << "/" << allPoints.size() ;
         }
     }
 
-    std::unordered_set<int> indexedDepths = {1, 2, 3, 5};
+    const std::unordered_set<int> indexedDepths = {1, 2, 3, 5};
     quadTreeRoot->buildSortedIndexForDepths(indexedDepths, allPoints);
 
-    qDebug() << "四叉树建立完成，成功插入:" << insertedCount
-             << "失败:" << failedCount;
-    qDebug() << "异常节点数量:" << exceptionalNodes.size();
+    Debug() << "四叉树建立完成，成功插入: " << insertedCount
+              << " 失败: " << failedCount ;
+    Debug() << "异常节点数量: " << exceptionalNodes.size() ;
 
     for (const QuadNode* node : exceptionalNodes) {
-        qDebug() << qSetRealNumberPrecision(15)
+        Debug() << std::setprecision(15)
         << "异常节点经纬度范围："
         << node->boundary.x - node->boundary.w
         << "-"
@@ -363,9 +401,10 @@ void DataManager::buildQuadTree(const AppConfig& config) {
         << ","
         << node->boundary.y - node->boundary.h
         << "-"
-        << node->boundary.y + node->boundary.h;
-        qDebug() << "异常节点内部点:" << node->points.size();
-        qDebug() << "异常节点深度:" << node->depth;
+        << node->boundary.y + node->boundary.h
+        ;
+        Debug() << "异常节点内部点: " << node->points.size() ;
+        Debug() << "异常节点深度: " << node->depth ;
     }
 }
 
@@ -376,16 +415,16 @@ bool DataManager::hasQuadTree() {
 std::vector<GPSPoint> DataManager::getPointsRangeById(int id) {
     std::vector<GPSPoint> result;
 
-    auto it = idToRange.find(id);
+    const auto it = idToRange.find(id);
     if (it == idToRange.end()) {
         return result;
     }
 
     const VehicleRange& range = it->second;
-    result.reserve(range.end - range.start + 1);
+    result.reserve(static_cast<std::size_t>(range.end - range.start + 1));
 
     for (int i = range.start; i <= range.end; ++i) {
-        result.push_back(allPoints[i]);
+        result.push_back(allPoints[static_cast<std::size_t>(i)]);
     }
 
     return result;
@@ -396,7 +435,7 @@ std::vector<GPSPoint> DataManager::querySpatial(double minLon, double minLat,
     std::vector<GPSPoint> result;
 
     if (!quadTreeRoot) {
-        qDebug() << "queryRange: 四叉树尚未建立";
+        Debug() << "queryRange: 四叉树尚未建立" ;
         return result;
     }
 
@@ -410,13 +449,13 @@ std::vector<GPSPoint> DataManager::querySpatial(double minLon, double minLat,
     quadTreeRoot->querySpatial(range, foundIndexes, allPoints);
 
     result.reserve(foundIndexes.size());
-    for (int idx : foundIndexes) {
+    for (const int idx : foundIndexes) {
         if (idx >= 0 && idx < static_cast<int>(allPoints.size())) {
-            result.push_back(allPoints[idx]);
+            result.push_back(allPoints[static_cast<std::size_t>(idx)]);
         }
     }
 
-    qDebug() << "queryRange: 命中点数 =" << result.size();
+    Debug() << "queryRange: 命中点数 = " << result.size() ;
     return result;
 }
 
@@ -426,7 +465,7 @@ std::vector<GPSPoint> DataManager::querySpatialAndTime(double minLon, double min
     std::vector<GPSPoint> result;
 
     if (!quadTreeRoot) {
-        qDebug() << "queryRange: 四叉树尚未建立";
+        Debug() << "queryRange: 四叉树尚未建立" ;
         return result;
     }
 
@@ -440,13 +479,13 @@ std::vector<GPSPoint> DataManager::querySpatialAndTime(double minLon, double min
     quadTreeRoot->querySpatioTemporal(range, minTimeStamp, maxTimeStamp, foundIndexes, allPoints);
 
     result.reserve(foundIndexes.size());
-    for (int idx : foundIndexes) {
+    for (const int idx : foundIndexes) {
         if (idx >= 0 && idx < static_cast<int>(allPoints.size())) {
-            result.push_back(allPoints[idx]);
+            result.push_back(allPoints[static_cast<std::size_t>(idx)]);
         }
     }
 
-    qDebug() << "queryRange: 命中点数 =" << result.size();
+    Debug() << "queryRange: 命中点数 = " << result.size() ;
     return result;
 }
 
@@ -456,7 +495,7 @@ std::unordered_set<int> DataManager::querySpatioTemporalUniqueIds(double minLon,
     std::unordered_set<int> foundIndexes;
 
     if (!quadTreeRoot) {
-        qDebug() << "queryRange: 四叉树尚未建立";
+        Debug() << "queryRange: 四叉树尚未建立" ;
         return foundIndexes;
     }
 
@@ -485,16 +524,11 @@ std::vector<ClusterPoint> DataManager::clusterPointsForView(const std::vector<GP
     const double safeMaxLat = std::max(minLat, maxLat);
 
     double gridSize = baseGridSizeByZoom(zoom);
-
-    // 原来 100，现在扩大到 2.25 倍 = 225
     const int targetMaxClusters = 225;
 
     for (int attempt = 0; attempt < 8; ++attempt) {
-        result = buildClustersWithGrid(points,
-                                       safeMinLon, safeMinLat,
-                                       safeMaxLon, safeMaxLat,
-                                       gridSize,
-                                       zoom);
+        result = buildClustersWithGrid(
+            points, safeMinLon, safeMinLat, safeMaxLon, safeMaxLat, gridSize, zoom);
 
         if (static_cast<int>(result.size()) <= targetMaxClusters) {
             break;
@@ -503,22 +537,28 @@ std::vector<ClusterPoint> DataManager::clusterPointsForView(const std::vector<GP
         gridSize *= 1.6;
     }
 
-    qDebug() << "clusterPointsForView: zoom =" << zoom
-             << ", 原始点数 =" << points.size()
-             << ", 聚合后对象数 =" << result.size();
+    Debug() << "clusterPointsForView: zoom = " << zoom
+              << ", 原始点数 = " << points.size()
+              << ", 聚合后对象数 = " << result.size() ;
 
     return result;
 }
 
-int DataManager::getUniqueCountById(const std::vector<GPSPoint>& points)
-{
+int DataManager::getUniqueCountById(const std::vector<GPSPoint>& points) {
     int maxId = 11000;
-    std::vector<bool> seen(maxId + 1, false);
+    for (const auto& p : points) {
+        maxId = std::max(maxId, p.id);
+    }
+
+    std::vector<bool> seen(static_cast<std::size_t>(maxId + 1), false);
     int count = 0;
 
     for (const auto& p : points) {
-        if (!seen[p.id]) {
-            seen[p.id] = true;
+        if (p.id < 0) {
+            continue;
+        }
+        if (!seen[static_cast<std::size_t>(p.id)]) {
+            seen[static_cast<std::size_t>(p.id)] = true;
             ++count;
         }
     }

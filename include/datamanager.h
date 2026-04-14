@@ -1,41 +1,41 @@
 #ifndef DATAMANAGER_H
 #define DATAMANAGER_H
 
-#include <QString>
-#include <vector>
 #include <memory>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
+
 #include "appconfig.h"
 #include "quadtree.h"
-#include <set>
 
 class DatabaseManager;
 
 struct GPSPoint {
-    int id;
-    long long timestamp;
-    double lon;
-    double lat;
+    int id = 0;
+    long long timestamp = 0;
+    double lon = 0.0;
+    double lat = 0.0;
 };
 
 struct VehicleRange {
-    int start;
-    int end;
+    int start = 0;
+    int end = -1;
 };
 
 struct ClusterPoint {
-    double lon;
-    double lat;
-    int count;
-    bool isCluster;
+    double lon = 0.0;
+    double lat = 0.0;
+    int count = 0;
+    bool isCluster = false;
 
-    double minLon;
-    double minLat;
-    double maxLon;
-    double maxLat;
+    double minLon = 0.0;
+    double minLat = 0.0;
+    double maxLon = 0.0;
+    double maxLat = 0.0;
 
-    std::vector<GPSPoint> children; // 只有局部聚类桶足够小且 zoom 足够大时才填充
+    std::vector<GPSPoint> children;
 };
 
 class DataManager {

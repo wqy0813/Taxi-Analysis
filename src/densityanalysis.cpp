@@ -1,8 +1,7 @@
 #include "densityanalysis.h"
 
-#include <QElapsedTimer>
-
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <unordered_map>
@@ -22,23 +21,19 @@ struct GridKey {
     int x = 0;
     int y = 0;
 
-    bool operator==(const GridKey& other) const
-    {
+    bool operator==(const GridKey& other) const {
         return x == other.x && y == other.y;
     }
 };
 
 struct GridKeyHash {
-    std::size_t operator()(const GridKey& key) const
-    {
+    std::size_t operator()(const GridKey& key) const {
         const std::size_t hx = std::hash<int>()(key.x);
         const std::size_t hy = std::hash<int>()(key.y);
         return hx ^ (hy << 1);
     }
 };
 
-// 轻量聚合记录：
-// 仅保留排序和分组统计需要的最小字段，避免旧方案“每桶每格维护一个 set”带来的内存放大。
 struct PointRecord {
     int bucketIndex = 0;
     int gx = 0;
@@ -46,28 +41,24 @@ struct PointRecord {
     int taxiId = 0;
 };
 
-double metersToLatDegrees(const double meters)
-{
+double metersToLatDegrees(const double meters) {
     return meters / kMetersPerDegreeLat;
 }
 
-double metersToLonDegrees(const double meters, const double latitudeDegrees)
-{
+double metersToLonDegrees(const double meters, const double latitudeDegrees) {
     const double cosValue = std::cos(latitudeDegrees * kPi / 180.0);
     const double metersPerDegreeLon = std::max(1.0, kMetersPerDegreeLat * std::abs(cosValue));
     return meters / metersPerDegreeLon;
 }
 
-double estimateCellAreaKm2(const double lonStep, const double latStep, const double latitudeDegrees)
-{
+double estimateCellAreaKm2(const double lonStep, const double latStep, const double latitudeDegrees) {
     const double latMeters = latStep * kMetersPerDegreeLat;
     const double lonMeters = lonStep * kMetersPerDegreeLat * std::abs(std::cos(latitudeDegrees * kPi / 180.0));
     const double areaM2 = std::max(1.0, latMeters * lonMeters);
     return areaM2 / 1'000'000.0;
 }
 
-int clampGridIndex(const double value, const int maxIndex)
-{
+int clampGridIndex(const double value, const int maxIndex) {
     if (maxIndex <= 0) {
         return 0;
     }
@@ -85,41 +76,37 @@ int clampGridIndex(const double value, const int maxIndex)
     return index;
 }
 
-double calcDeltaRate(const double current, const double previous)
-{
+double calcDeltaRate(const double current, const double previous) {
     if (std::abs(previous) <= kEpsilon) {
         return current > 0.0 ? 1.0 : 0.0;
     }
     return (current - previous) / previous;
 }
 
-bool validateRequest(const DensityAnalysisRequest& request, QString& errorMessage)
-{
+bool validateRequest(const DensityAnalysisRequest& request, std::string& errorMessage) {
     if (request.minLon >= request.maxLon || request.minLat >= request.maxLat) {
-        errorMessage = QStringLiteral("map bounds invalid");
+        errorMessage = "map bounds invalid";
         return false;
     }
     if (request.startTime > request.endTime) {
-        errorMessage = QStringLiteral("start time must be <= end time");
+        errorMessage = "start time must be <= end time";
         return false;
     }
     if (request.intervalMinutes <= 0) {
-        errorMessage = QStringLiteral("intervalMinutes must be > 0");
+        errorMessage = "intervalMinutes must be > 0";
         return false;
     }
     if (request.cellSizeMeters <= 0.0) {
-        errorMessage = QStringLiteral("cellSizeMeters must be > 0");
+        errorMessage = "cellSizeMeters must be > 0";
         return false;
     }
     return true;
 }
 
-void initBuckets(
-    std::vector<DensityTimeBucket>& buckets,
-    const long long startTime,
-    const long long endTime,
-    const int bucketSeconds)
-{
+void initBuckets(std::vector<DensityTimeBucket>& buckets,
+                 const long long startTime,
+                 const long long endTime,
+                 const int bucketSeconds) {
     for (std::size_t i = 0; i < buckets.size(); ++i) {
         DensityTimeBucket& bucket = buckets[i];
         const long long bucketStart = startTime + static_cast<long long>(i) * bucketSeconds;
@@ -130,23 +117,20 @@ void initBuckets(
 
 } // namespace
 
-DensityAnalysisResult DensityAnalyzer::analyze(const DensityAnalysisRequest& request)
-{
+DensityAnalysisResult DensityAnalyzer::analyze(const DensityAnalysisRequest& request) {
     DensityAnalysisResult result;
 
-    // 参数合法性校验：只做输入正确性检查，不对“正常查询”做硬阈值拒绝。
     if (!validateRequest(request, result.errorMessage)) {
         return result;
     }
 
-    QElapsedTimer timer;
-    timer.start();
+    const auto start = std::chrono::steady_clock::now();
 
     const double centerLat = (request.minLat + request.maxLat) * 0.5;
     const double latStep = metersToLatDegrees(request.cellSizeMeters);
     const double lonStep = metersToLonDegrees(request.cellSizeMeters, centerLat);
     if (latStep <= 0.0 || lonStep <= 0.0) {
-        result.errorMessage = QStringLiteral("grid step conversion failed");
+        result.errorMessage = "grid step conversion failed";
         return result;
     }
 
@@ -154,7 +138,7 @@ DensityAnalysisResult DensityAnalyzer::analyze(const DensityAnalysisRequest& req
     const long long totalSeconds = std::max<long long>(0, request.endTime - request.startTime);
     const int bucketCount = static_cast<int>(totalSeconds / bucketSeconds) + 1;
     if (bucketCount <= 0) {
-        result.errorMessage = QStringLiteral("bucket count invalid");
+        result.errorMessage = "bucket count invalid";
         return result;
     }
 
@@ -172,24 +156,9 @@ DensityAnalysisResult DensityAnalyzer::analyze(const DensityAnalysisRequest& req
     result.gridCount = gridCount;
     result.analysisScale = analysisScale;
 
-    // 候选点输入仍然严格使用现有接口。
     const std::vector<GPSPoint> candidates = DataManager::querySpatialAndTime(
-        request.minLon,
-        request.minLat,
-        request.maxLon,
-        request.maxLat,
-        request.startTime,
-        request.endTime);
+        request.minLon, request.minLat, request.maxLon, request.maxLat, request.startTime, request.endTime);
 
-    // 旧方案问题：
-    // 为每个(时间桶, 网格)维护 unordered_set<int>，在大范围细网格下会产生大量小哈希表，
-    // 内存碎片和哈希开销都较重。
-    //
-    // 新方案：
-    // 1) 先压缩成轻量记录 (bucketIndex, gx, gy, taxiId)；
-    // 2) 按 (bucket, gx, gy, taxiId) 排序；
-    // 3) 线性扫描一次，精确得到 pointCount 和 vehicleCount。
-    // 该方案把“去重”转换为“相邻比较”，显著降低临时内存占用。
     std::vector<PointRecord> records;
     records.reserve(candidates.size());
 
@@ -198,9 +167,7 @@ DensityAnalysisResult DensityAnalyzer::analyze(const DensityAnalysisRequest& req
 
     for (const auto& point : candidates) {
         const int bucketIndex = std::clamp(
-            static_cast<int>((point.timestamp - request.startTime) / bucketSeconds),
-            0,
-            bucketCount - 1);
+            static_cast<int>((point.timestamp - request.startTime) / bucketSeconds), 0, bucketCount - 1);
 
         const int gx = clampGridIndex((point.lon - request.minLon) / lonStep, columnCount - 1);
         const int gy = clampGridIndex((point.lat - request.minLat) / latStep, rowCount - 1);
@@ -214,25 +181,15 @@ DensityAnalysisResult DensityAnalyzer::analyze(const DensityAnalysisRequest& req
 
     std::sort(records.begin(), records.end(),
               [](const PointRecord& a, const PointRecord& b) {
-                  if (a.bucketIndex != b.bucketIndex) {
-                      return a.bucketIndex < b.bucketIndex;
-                  }
-                  if (a.gy != b.gy) {
-                      return a.gy < b.gy;
-                  }
-                  if (a.gx != b.gx) {
-                      return a.gx < b.gx;
-                  }
+                  if (a.bucketIndex != b.bucketIndex) return a.bucketIndex < b.bucketIndex;
+                  if (a.gy != b.gy) return a.gy < b.gy;
+                  if (a.gx != b.gx) return a.gx < b.gx;
                   return a.taxiId < b.taxiId;
               });
 
     std::vector<DensityTimeBucket> buckets(static_cast<std::size_t>(bucketCount));
     initBuckets(buckets, request.startTime, request.endTime, bucketSeconds);
 
-    // 线性扫描聚合：
-    // 每次处理一个 (bucketIndex, gx, gy) 分组，分组内：
-    // - pointCount = 记录条数
-    // - vehicleCount = taxiId 去重后数量（通过有序相邻比较实现）
     std::size_t i = 0;
     while (i < records.size()) {
         const int bucketIndex = records[i].bucketIndex;
@@ -274,8 +231,6 @@ DensityAnalysisResult DensityAnalyzer::analyze(const DensityAnalysisRequest& req
         bucket.cells.push_back(std::move(cell));
     }
 
-    // 计算跨桶变化：
-    // 对同一网格，和“上一时间桶”做 delta 统计。
     std::unordered_map<GridKey, double, GridKeyHash> prevDensityByCell;
     std::unordered_map<GridKey, int, GridKeyHash> prevVehicleByCell;
     double prevTotalFlowDensity = 0.0;
@@ -310,18 +265,11 @@ DensityAnalysisResult DensityAnalyzer::analyze(const DensityAnalysisRequest& req
         prevDensityByCell.swap(currentDensityByCell);
         prevVehicleByCell.swap(currentVehicleByCell);
 
-        // 保持与现有前端一致：同桶内按密度降序输出。
         std::sort(bucket.cells.begin(), bucket.cells.end(),
                   [](const DensityGridCell& a, const DensityGridCell& b) {
-                      if (a.vehicleDensity != b.vehicleDensity) {
-                          return a.vehicleDensity > b.vehicleDensity;
-                      }
-                      if (a.vehicleCount != b.vehicleCount) {
-                          return a.vehicleCount > b.vehicleCount;
-                      }
-                      if (a.gy != b.gy) {
-                          return a.gy < b.gy;
-                      }
+                      if (a.vehicleDensity != b.vehicleDensity) return a.vehicleDensity > b.vehicleDensity;
+                      if (a.vehicleCount != b.vehicleCount) return a.vehicleCount > b.vehicleCount;
+                      if (a.gy != b.gy) return a.gy < b.gy;
                       return a.gx < b.gx;
                   });
 
@@ -329,7 +277,8 @@ DensityAnalysisResult DensityAnalyzer::analyze(const DensityAnalysisRequest& req
     }
 
     result.buckets = std::move(buckets);
-    result.elapsedSeconds = static_cast<double>(timer.elapsed()) / 1000.0;
+    result.elapsedSeconds = static_cast<double>(
+                                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count()) / 1000.0;
     result.success = true;
     return result;
 }

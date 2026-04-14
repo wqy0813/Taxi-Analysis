@@ -1,76 +1,186 @@
 #include "appconfig.h"
-#include <QDir>
-#include <QFileInfo>
-#include <QSettings>
-#include <QDebug>
+#include "logger.h"
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <unordered_map>
 
-AppConfig AppConfig::load(const QString& configPath) {
-    QSettings settings(configPath, QSettings::IniFormat);
-    const QFileInfo configInfo(configPath);
-    const QDir configDir = configInfo.dir();
+namespace fs = std::filesystem;
 
-    const auto resolvePath = [&configDir](const QString& path) {
-        if (path.isEmpty()) {
-            return path;
+namespace {
+
+std::string trim(const std::string& input) {
+    std::size_t left = 0;
+    while (left < input.size() && std::isspace(static_cast<unsigned char>(input[left]))) {
+        ++left;
+    }
+
+    std::size_t right = input.size();
+    while (right > left && std::isspace(static_cast<unsigned char>(input[right - 1]))) {
+        --right;
+    }
+
+    return input.substr(left, right - left);
+}
+
+std::string stripInlineComment(const std::string& input) {
+    bool in_quote = false;
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        const char ch = input[i];
+        if (ch == '"' || ch == '\'') {
+            in_quote = !in_quote;
+        }
+        if (!in_quote && (ch == ';' || ch == '#')) {
+            return trim(input.substr(0, i));
+        }
+    }
+    return trim(input);
+}
+
+using IniMap = std::unordered_map<std::string, std::unordered_map<std::string, std::string>>;
+
+IniMap parseIniFile(const std::string& configPath) {
+    IniMap result;
+    std::ifstream fin(configPath);
+    if (!fin.is_open()) {
+        std::cerr << "Failed to open config file: " << configPath << std::endl;
+        return result;
+    }
+
+    std::string currentSection;
+    std::string line;
+    while (std::getline(fin, line)) {
+        line = trim(line);
+        if (line.empty()) {
+            continue;
         }
 
-        const QFileInfo fileInfo(path);
-        if (fileInfo.isAbsolute()) {
-            return QDir::cleanPath(fileInfo.absoluteFilePath());
+        if (line[0] == ';' || line[0] == '#') {
+            continue;
         }
 
-        return QDir::cleanPath(configDir.absoluteFilePath(path));
-    };
+        if (line.front() == '[' && line.back() == ']') {
+            currentSection = trim(line.substr(1, line.size() - 2));
+            continue;
+        }
+
+        const std::size_t pos = line.find('=');
+        if (pos == std::string::npos) {
+            continue;
+        }
+
+        const std::string key = trim(line.substr(0, pos));
+        const std::string value = stripInlineComment(line.substr(pos + 1));
+        result[currentSection][key] = value;
+    }
+
+    return result;
+}
+
+std::string getString(
+    const IniMap& ini,
+    const std::string& section,
+    const std::string& key,
+    const std::string& defaultValue) {
+    const auto sectionIt = ini.find(section);
+    if (sectionIt == ini.end()) {
+        return defaultValue;
+    }
+    const auto keyIt = sectionIt->second.find(key);
+    if (keyIt == sectionIt->second.end()) {
+        return defaultValue;
+    }
+    return keyIt->second;
+}
+
+int getInt(const IniMap& ini, const std::string& section, const std::string& key, const int defaultValue) {
+    try {
+        return std::stoi(getString(ini, section, key, std::to_string(defaultValue)));
+    } catch (...) {
+        return defaultValue;
+    }
+}
+
+double getDouble(const IniMap& ini, const std::string& section, const std::string& key, const double defaultValue) {
+    try {
+        return std::stod(getString(ini, section, key, std::to_string(defaultValue)));
+    } catch (...) {
+        return defaultValue;
+    }
+}
+
+std::string resolvePath(const fs::path& configDir, const std::string& pathString) {
+    if (pathString.empty()) {
+        return pathString;
+    }
+
+    fs::path path(pathString);
+    if (path.is_absolute()) {
+        return path.lexically_normal().string();
+    }
+
+    return (configDir / path).lexically_normal().string();
+}
+
+} // namespace
+
+AppConfig AppConfig::load(const std::string& configPath) {
+    const IniMap ini = parseIniFile(configPath);
+    const fs::path configDir = fs::absolute(fs::path(configPath)).parent_path();
 
     AppConfig cfg;
 
-    cfg.dataDir = resolvePath(settings.value("Paths/data_dir", "./data").toString());
-    cfg.dbPath = resolvePath(settings.value("Paths/db_path", "./taxi_data.db").toString());
-    cfg.mapPath = resolvePath(settings.value("Paths/map_path", "./map.html").toString());
+    cfg.dataDir = resolvePath(configDir, getString(ini, "Paths", "data_dir", "./data"));
+    cfg.dbPath = resolvePath(configDir, getString(ini, "Paths", "db_path", "./taxi_data.db"));
+    cfg.mapPath = resolvePath(configDir, getString(ini, "Paths", "map_path", "./map.html"));
 
-    const QString fallbackDataDir = QDir::cleanPath(configDir.absoluteFilePath("./data"));
-    if (!QDir(cfg.dataDir).exists() && QDir(fallbackDataDir).exists()) {
+    const std::string fallbackDataDir = (configDir / "data").lexically_normal().string();
+    if (!fs::exists(cfg.dataDir) && fs::exists(fallbackDataDir)) {
         cfg.dataDir = fallbackDataDir;
     }
 
-    // 注意：
-    // db_path 为团队联调的显式配置，不再自动回退到其他数据库文件。
-    // 之前的静默回退会导致“用户已替换数据库，但程序仍读取旧库”的问题，
-    // 这里改为仅告警，不修改 cfg.dbPath，避免路径行为不可预期。
-    const QFileInfo configuredDbInfo(cfg.dbPath);
-    if (!configuredDbInfo.exists()) {
-        qWarning().noquote() << QString("Configured db_path does not exist: %1").arg(cfg.dbPath);
-    } else if (configuredDbInfo.size() <= 8192) {
-        qWarning().noquote() << QString("Configured db_path looks too small (<= 8KB): %1").arg(cfg.dbPath);
+    if (!fs::exists(cfg.dbPath)) {
+        std::cerr << "Configured db_path does not exist: " << cfg.dbPath << std::endl;
+    } else if (fs::file_size(cfg.dbPath) <= 8192) {
+        std::cerr << "Configured db_path looks too small (<= 8KB): " << cfg.dbPath << std::endl;
     }
 
-    cfg.minLon = settings.value("Filter/min_lon", 115.0).toDouble();
-    cfg.maxLon = settings.value("Filter/max_lon", 118.0).toDouble();
-    cfg.minLat = settings.value("Filter/min_lat", 39.0).toDouble();
-    cfg.maxLat = settings.value("Filter/max_lat", 41.0).toDouble();
+    cfg.minLon = getDouble(ini, "Filter", "min_lon", 115.0);
+    cfg.maxLon = getDouble(ini, "Filter", "max_lon", 118.0);
+    cfg.minLat = getDouble(ini, "Filter", "min_lat", 39.0);
+    cfg.maxLat = getDouble(ini, "Filter", "max_lat", 41.0);
 
-    cfg.batchSize = settings.value("Import/batch_size", 500).toInt();
-    const uint portValue = settings.value("Server/port", 8080).toUInt();
-    cfg.serverPort = static_cast<quint16>(portValue >= 1 && portValue <= 65535 ? portValue : 8080);
+    cfg.batchSize = getInt(ini, "Import", "batch_size", 500);
 
-    cfg.mapCenterLon = settings.value("Map/center_lon", 116.404).toDouble();
-    cfg.mapCenterLat = settings.value("Map/center_lat", 39.915).toDouble();
-    cfg.mapInitialZoom = settings.value("Map/initial_zoom", 12).toInt();
-    cfg.mapMinZoom = settings.value("Map/min_zoom", 8).toInt();
-    cfg.mapMaxZoom = settings.value("Map/max_zoom", 18).toInt();
-    cfg.baiduMapAk = settings.value(
-        "Map/baidu_ak",
-        "hf0NAP9ccSVWWMCH0gb0jrZqM0kfwclr"
-    ).toString();
+    {
+        int portValue = getInt(ini, "Server", "port", 8080);
+        if (portValue < 1 || portValue > 65535) {
+            portValue = 8080;
+        }
+        cfg.serverPort = static_cast<std::uint16_t>(portValue);
+    }
 
-    cfg.rectCapacity=settings.value("QuadTree/rect_capacity", 500).toInt();
-    cfg.maxQuadTreeDepth = settings.value("QuadTree/max_depth", 64).toInt();
-    cfg.minQuadCellSize = settings.value("QuadTree/min_cell_size", 1e-7).toDouble();
+    cfg.mapCenterLon = getDouble(ini, "Map", "center_lon", 116.404);
+    cfg.mapCenterLat = getDouble(ini, "Map", "center_lat", 39.915);
+    cfg.mapInitialZoom = getInt(ini, "Map", "initial_zoom", 12);
+    cfg.mapMinZoom = getInt(ini, "Map", "min_zoom", 8);
+    cfg.mapMaxZoom = getInt(ini, "Map", "max_zoom", 18);
+    cfg.baiduMapAk = getString(ini, "Map", "baidu_ak", cfg.baiduMapAk);
+
+    cfg.rectCapacity = getInt(ini, "QuadTree", "rect_capacity", 500);
+    cfg.maxQuadTreeDepth = getInt(ini, "QuadTree", "max_depth", 64);
+    cfg.minQuadCellSize = getDouble(ini, "QuadTree", "min_cell_size", 1e-7);
+
     return cfg;
 }
+
 AppConfig AppConfigManager::config;
 
-void AppConfigManager::init(const QString& configPath) {
+void AppConfigManager::init(const std::string& configPath) {
     config = AppConfig::load(configPath);
 }
 

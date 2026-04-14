@@ -1,21 +1,21 @@
 #ifndef HTTPSERVER_H
 #define HTTPSERVER_H
 
-#include <QString>
+#include <cstdint>
+#include <string>
 
 #include "appconfig.h"
 
-class HttpServer
-{
+class HttpServer {
 public:
     explicit HttpServer(const AppConfig& config);
 
-    bool start(quint16 port);
+    bool start(std::uint16_t port);
 
 private:
-    QString resolveWebRoot() const;
+    std::string resolveWebRoot() const;
 
     AppConfig m_config;
 };
 
-#endif // HTTPSERVER_H
+#endif

@@ -1,16 +1,26 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(TaxiDataAnalysis VERSION 0.1 LANGUAGES CXX)
+project(TaxiDataAnalysis VERSION 0.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Support both Qt5 and Qt6.
-# Let CMake pick the major version, then load the matching modules.
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Sql)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Sql)
+if (MSVC)
+    add_compile_options(/utf-8)
+endif()
 
 include_directories(include)
+
+set(SQLITE_DIR ${CMAKE_SOURCE_DIR}/third_party/sqlite)
+
+add_library(sqlite3 STATIC
+    ${SQLITE_DIR}/sqlite3.c
+)
+
+target_include_directories(sqlite3 PUBLIC
+    ${SQLITE_DIR}
+)
 
 set(SOURCES
     src/main.cpp
@@ -20,6 +30,9 @@ set(SOURCES
     src/quadtree.cpp
     src/densityanalysis.cpp
     src/httpserver.cpp
+    src/logger.cpp
+    ${SQLITE_DIR}/sqlite3.c
+
     include/appconfig.h
     include/databasemanager.h
     include/datamanager.h
@@ -27,6 +40,7 @@ set(SOURCES
     include/utils.h
     include/densityanalysis.h
     include/httpserver.h
+    include/logger.h
 )
 
 add_executable(TaxiDataAnalysis ${SOURCES})
@@ -35,27 +49,13 @@ target_compile_definitions(TaxiDataAnalysis PRIVATE
     APP_SOURCE_WEB_ROOT="${CMAKE_SOURCE_DIR}/web"
 )
 
-target_link_libraries(TaxiDataAnalysis PRIVATE
-    Qt${QT_VERSION_MAJOR}::Core
-    Qt${QT_VERSION_MAJOR}::Sql
+target_include_directories(TaxiDataAnalysis PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${SQLITE_DIR}
 )
 
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+target_link_libraries(TaxiDataAnalysis PRIVATE sqlite3)
 
-add_custom_command(TARGET TaxiDataAnalysis POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_SOURCE_DIR}/config.ini
-        $<TARGET_FILE_DIR:TaxiDataAnalysis>/config.ini
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_SOURCE_DIR}/data
-        $<TARGET_FILE_DIR:TaxiDataAnalysis>/data
-    COMMENT "Copy runtime config and data assets next to the executable"
-)
-
-# Keep installation simple: the full install tree should run as-is.
-install(TARGETS TaxiDataAnalysis
-    RUNTIME DESTINATION bin
-)
-
-install(FILES ${CMAKE_SOURCE_DIR}/config.ini DESTINATION bin)
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/data DESTINATION bin)
+if (WIN32)
+    target_link_libraries(TaxiDataAnalysis PRIVATE ws2_32)
+endif()
