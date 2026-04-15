@@ -16,7 +16,6 @@
 	densityCellMaps: new Map(),
 	densityChunkMaps: new Map(),
 	densityTrendCache: new Map(),
-	densityQueryParams: null,
     densityChunkCache: new Map(),
     densityChunkAccessTick: 0,
     densityPlayTimer: null,
@@ -232,6 +231,18 @@ function setDockPanelState(name, open) {
     state.activeDockPanel = name;
     state.openDockPanel = open;
 
+    if (open === "density") {
+        ensureDensityTrendCharts();
+        requestAnimationFrame(() => {
+            resizeDensityTrendCharts();
+            loadCellTrend(hit.key).then(trend => {
+    state.densityTrendPreviewChart.setOption({
+        xAxis: { data: trend.labels },
+        series: [{ data: trend.densityValues }]
+    });
+});
+        });
+    }
 }
 
 function activateDockPanel(name) {
@@ -319,15 +330,18 @@ function initMap() {
 
     state.map.addEventListener("zoomend", refresh);
     state.map.addEventListener("moveend", refresh);
-
     window.addEventListener("resize", () => {
         resizeDensityTrendCharts();
         requestDensityRedraw();
-        if (state.densitySelectedCellKey) {
-            renderSelectedCellTrend();
-        }
+        loadCellTrend(hit.key).then(trend => {
+    state.densityTrendPreviewChart.setOption({
+        xAxis: { data: trend.labels },
+        series: [{ data: trend.densityValues }]
+    });
+});
     });
 }
+
 function clearTrajectoryOverlays() {
     if (!state.map) {
         return;
@@ -457,13 +471,16 @@ function cancelDensityRedraw() {
     }
 }
 
-function clearDensityQueryState() {
-    // 清除查询相关的UI状态，但保留缓存的桶数据
+function resetDensityState() {
     if (state.densityPlayTimer) {
         clearInterval(state.densityPlayTimer);
         state.densityPlayTimer = null;
     }
+    state.densityResult = null;
+    state.densityRenderModel = null;
     state.currentBucketIndex = 0;
+    state.densityCellMaps = [];
+    state.densityChunkMaps = [];
     state.densityHoverCell = null;
     state.densitySelectedCellKey = null;
     cancelDensityRedraw();
@@ -486,24 +503,6 @@ function clearDensityQueryState() {
     clearDensityTrendPreview();
     clearDensityTrendModal();
     clearDensityOverlay();
-}
-
-function clearDensityCacheOnly() {
-    // 清除所有缓存数据（用于查询条件改变时）
-    state.densityMeta = null;
-    state.densityQueryId = null;
-    state.densityBucketCache.clear();
-    state.densityCellMaps.clear();
-    state.densityChunkMaps.clear();
-    state.densityTrendCache.clear();
-    state.densityQueryParams = null;
-    state.densityRenderModel = null;
-}
-
-function resetDensityState() {
-    // 完全重置密度查询状态（包括缓存）
-    clearDensityQueryState();
-    clearDensityCacheOnly();
 }
 
 function createRegionPolygon(region) {
@@ -636,48 +635,31 @@ DensityGridOverlay.prototype.render = function render() {
 
     this.clear();
 
-    if (!state.densityMeta || !state.densityBucketCache.has(state.currentBucketIndex)) {
+    if (!state.densityResult || !state.densityResult.buckets || !state.densityResult.buckets.length) {
         return;
     }
 
-    const bucket = state.densityBucketCache.get(state.currentBucketIndex);
-    if (!bucket || !bucket.cells) {
+    if (!state.densityResult.buckets[state.currentBucketIndex]) {
         return;
     }
 
+    const visibleChunks = getDensityVisibleChunks();
     this._ctx.save();
     this._ctx.globalCompositeOperation = "source-over";
     this._ctx.lineJoin = "miter";
     this._ctx.lineCap = "square";
 
-    for (const cell of bucket.cells) {
-        const bounds = getDensityCellBounds(cell);
-        if (!bounds) {
+    for (const chunk of visibleChunks) {
+        const entry = getDensityChunkRender(state.currentBucketIndex, chunk);
+        if (!entry) {
             continue;
         }
-
-        const topLeft = pointToOverlayPixel(bounds.minLon, bounds.maxLat);
-        const bottomRight = pointToOverlayPixel(bounds.maxLon, bounds.minLat);
-        const centerX = (topLeft.x + bottomRight.x) * 0.5;
-        const centerY = (topLeft.y + bottomRight.y) * 0.5;
-        const rawWidth = Math.abs(bottomRight.x - topLeft.x);
-        const rawHeight = Math.abs(bottomRight.y - topLeft.y);
-
-        const drawWidth = Math.max(1, rawWidth);
-        const drawHeight = Math.max(1, rawHeight);
-        const left = Math.round(centerX - drawWidth * 0.5);
-        const top = Math.round(centerY - drawHeight * 0.5);
-
-		const density = Number(cell?.vehicleDensity || 0);
-
-const cellColor = getHeatColor(cell);
-this._ctx.fillStyle = cellColor;
-this._ctx.fillRect(left, top, drawWidth, drawHeight);
-
-       }
+        const topLeft = pointToOverlayPixel(chunk.minLon, chunk.maxLat);
+        this._ctx.drawImage(entry.canvas, topLeft.x, topLeft.y, entry.width, entry.height);
+    }
 
     if (state.densitySelectedCellKey) {
-        const selected = state.densityCellMaps.get(state.currentBucketIndex)?.get(state.densitySelectedCellKey);
+        const selected = getDensityCellByKey(state.currentBucketIndex, state.densitySelectedCellKey);
         if (selected) {
             const bounds = getDensityCellBounds(selected);
             if (bounds) {
@@ -994,24 +976,23 @@ function buildDensityTrendEmptyOption(emptyText = "请选择网格查看趋势")
 }
 
 function buildDensityTrendDataset(cellKey) {
-    if (!state.densityMeta) return { labels: [], data: [], hasData: false };
-    const points = [];
-    for (let i = 0; i < state.densityMeta.bucketCount; i++) {
-        const bucket = state.densityBucketCache.get(i);
-        const cell = bucket?.cells?.find(c => `${c.gx}:${c.gy}` === cellKey) || null;
-        points.push({
-            bucket: state.densityMeta.buckets?.[i],
+    const buckets = state.densityResult?.buckets || [];
+    const points = buckets.map((bucket, index) => {
+        const cell = state.densityCellMaps[index]?.get(cellKey) || null;
+        return {
+            bucket,
             cell,
             hasCell: Boolean(cell)
-        });
-    }
+        };
+    });
     return {
-    labels: points.map(({ bucket }) => getBucketShortLabel(bucket)),
-    fullLabels: points.map(({ bucket }) => getBucketLabel(bucket)),
-    densityValues: points.map(({ cell }) => Number(cell?.vehicleDensity || 0)),
-    cells: points.map(({ cell }) => cell),
-    hasData: points.some(({ hasCell }) => hasCell)
-};
+        labels: points.map(({ bucket }) => getBucketShortLabel(bucket)),
+        fullLabels: points.map(({ bucket }) => getBucketLabel(bucket)),
+        densityValues: points.map(({ cell }) => Number(cell?.vehicleDensity || 0)),
+        countValues: points.map(({ cell }) => Number(cell?.vehicleCount || 0)),
+        cells: points.map(({ cell }) => cell),
+        hasData: points.some(({ hasCell }) => hasCell)
+    };
 }
 
 function buildDensityPreviewOption(trend) {
@@ -1159,12 +1140,12 @@ function buildDensityModalOption(trend) {
                 color: "#30475a",
                 fontSize: 12
             },
-            data: ["车辆密度"]
+            data: ["车辆数", "车辆密度"]
         },
         tooltip: {
             trigger: "axis",
             axisPointer: {
-                type: "line"
+                type: "shadow"
             },
             confine: true,
             backgroundColor: "rgba(255, 255, 255, 0.98)",
@@ -1184,23 +1165,24 @@ function buildDensityModalOption(trend) {
                 const rows = [];
                 rows.push(`<div>时间：<b>${escapeHtml(trend.fullLabels?.[dataIndex] || trend.labels[dataIndex] || "-")}</b></div>`);
                 rows.push(`<div>轨迹点数：<b>${escapeHtml(formatCount(cell.pointCount))}</b></div>`);
+                rows.push(`<div>车辆数：<b>${escapeHtml(formatCount(cell.vehicleCount))}</b></div>`);
                 rows.push(`<div>车辆密度：<b>${escapeHtml(Number(cell.vehicleDensity || 0).toFixed(2))}</b></div>`);
                 return rows.join("");
             }
         },
         grid: {
             left: 58,
-            right: 24,
+            right: 62,
             top: 54,
             bottom: 82,
             containLabel: true
         },
         xAxis: {
             type: "category",
-            boundaryGap: false,
+            boundaryGap: true,
             data: trend.labels,
             axisTick: {
-                show: false
+                alignWithLabel: true
             },
             axisLine: {
                 lineStyle: {
@@ -1219,31 +1201,62 @@ function buildDensityModalOption(trend) {
                 show: false
             }
         },
-        yAxis: {
-            type: "value",
-            name: "车辆密度",
-            nameTextStyle: {
-                color: "#667888",
-                fontSize: 11,
-                padding: [0, 6, 0, 0]
+        yAxis: [
+            {
+                type: "value",
+                name: "车辆数",
+                nameTextStyle: {
+                    color: "#667888",
+                    fontSize: 11,
+                    padding: [0, 0, 0, 6]
+                },
+                axisLabel: {
+                    color: "#667888",
+                    fontSize: 11
+                },
+                splitLine: {
+                    lineStyle: {
+                        color: "rgba(136, 163, 183, 0.16)"
+                    }
+                }
             },
-            axisLabel: {
-                color: "#667888",
-                fontSize: 11
-            },
-            splitLine: {
-                lineStyle: {
-                    color: "rgba(136, 163, 183, 0.16)"
+            {
+                type: "value",
+                name: "车辆密度",
+                position: "right",
+                nameTextStyle: {
+                    color: "#667888",
+                    fontSize: 11,
+                    padding: [0, 6, 0, 0]
+                },
+                axisLabel: {
+                    color: "#667888",
+                    fontSize: 11
+                },
+                splitLine: {
+                    show: false
                 }
             }
-        },
+        ],
         series: [
+            {
+                name: "车辆数",
+                type: "bar",
+                yAxisIndex: 0,
+                data: trend.countValues,
+                barWidth: "42%",
+                itemStyle: {
+                    color: "#6ab5f4",
+                    borderRadius: [0, 0, 0, 0]
+                }
+            },
             {
                 name: "车辆密度",
                 type: "line",
                 smooth: true,
                 showSymbol: true,
                 symbolSize: 7,
+                yAxisIndex: 1,
                 data: trend.densityValues,
                 connectNulls: false,
                 lineStyle: {
@@ -1254,9 +1267,21 @@ function buildDensityModalOption(trend) {
                     color: "#f2842c"
                 }
             }
-        ]
+        ],
+        graphic: trend.hasData ? [] : {
+            type: "text",
+            left: "center",
+            top: "middle",
+            style: {
+                text: "请选择网格查看趋势",
+                fill: "rgba(102, 120, 136, 0.82)",
+                fontSize: 15,
+                fontWeight: 600
+            }
+        }
     };
 }
+
 function pointToOverlayPixel(lon, lat) {
     const point = new BMap.Point(lon, lat);
     if (state.map && typeof state.map.pointToOverlayPixel === "function") {
@@ -1289,9 +1314,29 @@ function clearDensityChunkCache() {
 }
 
 function buildDensityChunkMaps() {
-    // This function is deprecated with new 3-part API design
-    // Chunk-based rendering is no longer needed
-    state.densityChunkMaps = new Map();
+    const model = getDensityGridModel();
+    const buckets = state.densityResult?.buckets || [];
+    if (!model || buckets.length === 0) {
+        state.densityChunkMaps = [];
+        clearDensityChunkCache();
+        return;
+    }
+
+    state.densityChunkMaps = buckets.map((bucket) => {
+        const map = new Map();
+        for (const cell of bucket.cells || []) {
+            const chunkX = Math.floor(Number(cell.gx || 0) / model.chunkCellSize);
+            const chunkY = Math.floor(Number(cell.gy || 0) / model.chunkCellSize);
+            const chunkKey = `${chunkX}:${chunkY}`;
+            let chunkCells = map.get(chunkKey);
+            if (!chunkCells) {
+                chunkCells = new Map();
+                map.set(chunkKey, chunkCells);
+            }
+            chunkCells.set(`${cell.gx}:${cell.gy}`, cell);
+        }
+        return map;
+    });
     clearDensityChunkCache();
 }
 
@@ -1311,7 +1356,7 @@ function getDensityCellBoundsFromGrid(gx, gy, grid = getDensityGridModel()) {
 }
 
 function getDensityChunkCells(bucketIndex, chunkKey) {
-    return state.densityChunkMaps.get(bucketIndex)?.get(chunkKey) || null;
+    return state.densityChunkMaps[bucketIndex]?.get(chunkKey) || null;
 }
 
 function getDensityChunkCacheKey(bucketIndex, zoom, dpr, chunkKey) {
@@ -1436,11 +1481,12 @@ function renderDensityChunkToCanvas(ctx, grid, bucketIndex, chunk) {
 
             const cell = cellMap.get(`${gx}:${gy}`);
             if (cell) {
-                const cellColor = getHeatColor(cell);
-ctx.fillStyle = cellColor;
-ctx.fillRect(localLeft, localTop, drawWidth, drawHeight);
-			}
-const density = Number(cell?.vehicleDensity || 0);
+                const ratio = getDensityRatio(cell);
+                ctx.fillStyle = getHeatColor(ratio);
+                ctx.fillRect(localLeft, localTop, drawWidth, drawHeight);
+                ctx.strokeStyle = ratio > 0.72 ? hotBorderStyle : heatBorderStyle;
+                ctx.strokeRect(localLeft + 0.5, localTop + 0.5, Math.max(0, Math.round(drawWidth) - 1), Math.max(0, Math.round(drawHeight) - 1));
+            }
         }
     }
 
@@ -1512,7 +1558,7 @@ function parseDensityCellKey(key) {
 }
 
 function getDensityCellByKey(bucketIndex, key) {
-    const bucket = state.densityCellMaps.get(bucketIndex);
+    const bucket = state.densityCellMaps[bucketIndex];
     const keyText = String(key || "");
     const cached = bucket?.get(keyText);
     if (cached) {
@@ -1524,21 +1570,25 @@ function getDensityCellByKey(bucketIndex, key) {
         return null;
     }
 
+    // 空格子也需要能被命中和高亮，方便“完整网格 + 热力填色”的交互保持一致。
     return {
         gx: grid.gx,
         gy: grid.gy,
         pointCount: 0,
+        vehicleCount: 0,
         vehicleDensity: 0,
         flowIntensity: 0,
+        deltaVehicleCount: 0,
         deltaVehicleDensity: 0,
         deltaRate: 0
     };
 }
+
 // 根据网格索引反推网格经纬度边界。
 // 后端已不再逐单元返回 min/max 经纬度，减少了返回体积；
 // 前端统一用该函数在绘制/高亮时按需计算。
 function getDensityCellBounds(cell) {
-    if (!state.densityMeta || !cell) {
+    if (!state.densityResult || !cell) {
         return null;
     }
 
@@ -1547,22 +1597,56 @@ function getDensityCellBounds(cell) {
         return getDensityCellBoundsFromGrid(Number(cell.gx), Number(cell.gy), grid);
     }
 
-    return null;
+    // 优先使用后端显式返回的网格边界，避免前端重算带来的累计误差。
+    if (Number.isFinite(Number(cell.minLon)) &&
+        Number.isFinite(Number(cell.minLat)) &&
+        Number.isFinite(Number(cell.maxLon)) &&
+        Number.isFinite(Number(cell.maxLat))) {
+        return {
+            minLon: Number(cell.minLon),
+            minLat: Number(cell.minLat),
+            maxLon: Number(cell.maxLon),
+            maxLat: Number(cell.maxLat)
+        };
+    }
+
+    const minLon = Number(state.densityResult.minLon);
+    const minLat = Number(state.densityResult.minLat);
+    const maxLon = Number(state.densityResult.maxLon);
+    const maxLat = Number(state.densityResult.maxLat);
+    const lonStep = Number(state.densityResult.lonStep);
+    const latStep = Number(state.densityResult.latStep);
+
+    if (!Number.isFinite(minLon) || !Number.isFinite(minLat) ||
+        !Number.isFinite(maxLon) || !Number.isFinite(maxLat) ||
+        !Number.isFinite(lonStep) || !Number.isFinite(latStep) ||
+        lonStep <= 0 || latStep <= 0) {
+        return null;
+    }
+
+    const cellMinLon = minLon + Number(cell.gx || 0) * lonStep;
+    const cellMinLat = minLat + Number(cell.gy || 0) * latStep;
+    return {
+        minLon: cellMinLon,
+        minLat: cellMinLat,
+        maxLon: Math.min(cellMinLon + lonStep, maxLon),
+        maxLat: Math.min(cellMinLat + latStep, maxLat)
+    };
 }
 
 function drawDensityGridBase(ctx, visibleRange) {
-    if (!state.densityMeta) {
+    if (!state.densityResult) {
         return;
     }
 
-    const minLon = Number(state.densityMeta.minLon);
-    const minLat = Number(state.densityMeta.minLat);
-    const maxLon = Number(state.densityMeta.maxLon);
-    const maxLat = Number(state.densityMeta.maxLat);
-    const lonStep = Number(state.densityMeta.lonStep);
-    const latStep = Number(state.densityMeta.latStep);
-    const columnCount = Number(state.densityMeta.columnCount || 0);
-    const rowCount = Number(state.densityMeta.rowCount || 0);
+    const minLon = Number(state.densityResult.minLon);
+    const minLat = Number(state.densityResult.minLat);
+    const maxLon = Number(state.densityResult.maxLon);
+    const maxLat = Number(state.densityResult.maxLat);
+    const lonStep = Number(state.densityResult.lonStep);
+    const latStep = Number(state.densityResult.latStep);
+    const columnCount = Number(state.densityResult.columnCount || 0);
+    const rowCount = Number(state.densityResult.rowCount || 0);
 
     if (!Number.isFinite(minLon) || !Number.isFinite(minLat) ||
         !Number.isFinite(maxLon) || !Number.isFinite(maxLat) ||
@@ -1642,19 +1726,22 @@ function drawDensityHeatCells(ctx, cells, visibleRange) {
         const left = Math.round(centerX - drawWidth * 0.5);
         const top = Math.round(centerY - drawHeight * 0.5);
 
-        const cellColor = getHeatColor(cell);
+        const ratio = getDensityRatio(cell);
+        const cellColor = getHeatColor(ratio);
         ctx.fillStyle = cellColor;
         ctx.fillRect(left, top, drawWidth, drawHeight);
-		
 
-
-            }
+        // 有数据格子的边框比底图网格略强一层，保持规则网格感，同时让热力信息更显眼。
+        ctx.strokeStyle = ratio > 0.72 ? "rgba(214, 71, 64, 0.70)" : "rgba(80, 146, 176, 0.38)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(left + 0.5, top + 0.5, Math.max(0, Math.round(drawWidth) - 1), Math.max(0, Math.round(drawHeight) - 1));
+    }
 
     ctx.restore();
 }
 
 function getVisibleDensityGridRange() {
-    if (!state.densityMeta || !state.map || typeof state.map.getBounds !== "function") {
+    if (!state.densityResult || !state.map || typeof state.map.getBounds !== "function") {
         return null;
     }
 
@@ -1665,14 +1752,14 @@ function getVisibleDensityGridRange() {
 
     const sw = bounds.getSouthWest();
     const ne = bounds.getNorthEast();
-    const minLon = Number(state.densityMeta.minLon);
-    const minLat = Number(state.densityMeta.minLat);
-    const maxLon = Number(state.densityMeta.maxLon);
-    const maxLat = Number(state.densityMeta.maxLat);
-    const lonStep = Number(state.densityMeta.lonStep);
-    const latStep = Number(state.densityMeta.latStep);
-    const columnCount = Number(state.densityMeta.columnCount || 0);
-    const rowCount = Number(state.densityMeta.rowCount || 0);
+    const minLon = Number(state.densityResult.minLon);
+    const minLat = Number(state.densityResult.minLat);
+    const maxLon = Number(state.densityResult.maxLon);
+    const maxLat = Number(state.densityResult.maxLat);
+    const lonStep = Number(state.densityResult.lonStep);
+    const latStep = Number(state.densityResult.latStep);
+    const columnCount = Number(state.densityResult.columnCount || 0);
+    const rowCount = Number(state.densityResult.rowCount || 0);
 
     if (!Number.isFinite(minLon) || !Number.isFinite(minLat) ||
         !Number.isFinite(maxLon) || !Number.isFinite(maxLat) ||
@@ -1710,10 +1797,10 @@ function drawDensityBucket() {
 }
 
 function getDensityRatio(cell) {
-    if (!state.densityMeta) {
+    if (!state.densityResult) {
         return 0;
     }
-    const maxDensity = Number(state.densityMeta.maxVehicleDensity || 0);
+    const maxDensity = Number(state.densityResult.maxVehicleDensity || 0);
     if (maxDensity <= 0) {
         return 0;
     }
@@ -1729,21 +1816,21 @@ function mixColor(start, end, t) {
     return [r, g, b];
 }
 
-function getHeatColor(cell) {
-    const d = Number(cell?.vehicleDensity || 0);
-
-    let color;
-
-    if (d < 5) {
-        color = "rgba(100, 180, 255, 0.3)";   // 蓝
-    } 
-     else if (d < 20) {
-        color = "rgba(255, 140, 60, 0.4)";    // 橙
+function getHeatColor(ratio) {
+    // 更克制的三段色带：低密度蓝青，中密度黄橙，高密度红。
+    const low = [164, 222, 240];
+    const mid = [243, 186, 73];
+    const high = [223, 79, 73];
+    let rgb;
+    if (ratio <= 0.5) {
+        rgb = mixColor(low, mid, ratio / 0.5);
     } else {
-        color = "rgba(220, 60, 60, 0.5)";     // 红
+        rgb = mixColor(mid, high, (ratio - 0.5) / 0.5);
     }
-    return color;
+    const alpha = 0.16 + ratio * 0.6;
+    return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha.toFixed(3)})`;
 }
+
 function hideDensityTooltip() {
     if (!state.densityTooltip) {
         return;
@@ -1795,75 +1882,23 @@ async function loadCellTrend(cellKey) {
         })
     });
 
-    const cells = trend.series.map(s => ({
-        gx,
-        gy,
-        seconds: s[3],
-        vehicleDensity: (s[3] / state.densityMeta.bucketSeconds) / state.densityMeta.cellAreaKm2,
-        pointCount: 0
-    }));
-
     const data = {
         labels: trend.series.map(s => getBucketShortLabel({ startTime: s[1] })),
-        fullLabels: trend.series.map(s => {
-            const startTime = s[1];
-            const endTime = s[2];
-            return `${formatDateTime(startTime)} - ${formatDateTime(endTime)}`;
-        }),
-        densityValues: cells.map(c => c.vehicleDensity),
-        cells,
-        hasData: cells.some(c => Number(c.seconds || 0) > 0)
+        densityValues: trend.series.map(s =>
+            (s[3] / state.densityMeta.bucketSeconds) / state.densityMeta.cellAreaKm2
+        )
     };
 
     state.densityTrendCache.set(cellKey, data);
     return data;
 }
-    
 function prefetchDensityBuckets(center) {
-    // 只预加载前后各一个桶，如果已经在缓存中则跳过
     [center + 1, center - 1].forEach(i => {
         if (i >= 0 && i < state.densityMeta.bucketCount &&
             !state.densityBucketCache.has(i)) {
-            // 不触发 ensureDensityBucketLoaded（它会再次预加载）
-            // 直接请求，避免递归预加载造成的请求风暴
-            loadDensityBucketInBackground(i);
+            ensureDensityBucketLoaded(i);
         }
     });
-}
-
-async function loadDensityBucketInBackground(bucketIndex) {
-    // 后台静默加载，不触发进一步的预加载
-    if (state.densityBucketCache.has(bucketIndex)) {
-        return;
-    }
-
-    try {
-        const bucket = await requestJson("/api/density/bucket", {
-            method: "POST",
-            body: JSON.stringify({
-                queryId: state.densityQueryId,
-                bucketIndex
-            })
-        });
-
-        const meta = state.densityMeta;
-        const cells = (bucket.cells || []).map(([gx, gy, seconds]) => {
-            const density = (seconds / meta.bucketSeconds) / meta.cellAreaKm2;
-            return { gx, gy, seconds, vehicleDensity: density };
-        });
-
-        const bucketData = { bucketIndex, startTime: bucket.startTime, endTime: bucket.endTime, cells };
-        state.densityBucketCache.set(bucketIndex, bucketData);
-
-        // 构建 map 以加快查找
-        const map = new Map();
-        cells.forEach(c => map.set(`${c.gx}:${c.gy}`, c));
-        state.densityCellMaps.set(bucketIndex, map);
-
-        trimDensityBucketCache(bucketIndex);
-    } catch (error) {
-        // 后台加载失败时默默忽略
-    }
 }
 function getBucketLabel(bucket) {
     if (!bucket) {
@@ -1884,13 +1919,13 @@ function getBucketShortLabel(bucket) {
     return startText;
 }
 
-async function renderSelectedCellTrend() {
+function renderSelectedCellTrend() {
     ensureDensityTrendCharts();
     if (!state.densityTrendPreviewChart) {
         return;
     }
 
-    if (!state.densityMeta || !state.densitySelectedCellKey) {
+    if (!state.densityResult || !state.densitySelectedCellKey) {
         clearDensityTrendPreview();
         if (state.densityTrendModalOpen) {
             clearDensityTrendModal();
@@ -1898,65 +1933,44 @@ async function renderSelectedCellTrend() {
         return;
     }
 
-    try {
-        const trend = await loadCellTrend(state.densitySelectedCellKey);
-
-        if (!trend || !trend.labels.length || !trend.hasData) {
-            clearDensityTrendPreview();
-            if (state.densityTrendModalOpen) {
-                clearDensityTrendModal();
-            }
-            return;
-        }
-
-        state.densityTrendPreviewChart.setOption(buildDensityPreviewOption(trend), true);
-
-        if (state.densityTrendModalOpen) {
-            renderDensityTrendModal(trend);
-        }
-    } catch (error) {
-        console.error("加载网格趋势失败:", error);
+    const trend = buildDensityTrendDataset(state.densitySelectedCellKey);
+    if (!trend.labels.length || !trend.hasData) {
         clearDensityTrendPreview();
         if (state.densityTrendModalOpen) {
             clearDensityTrendModal();
         }
+        return;
+    }
+
+    state.densityTrendPreviewChart.setOption(buildDensityPreviewOption(trend), true);
+
+    if (state.densityTrendModalOpen) {
+        renderDensityTrendModal(trend);
     }
 }
-    
-async function renderDensityTrendModal(trend = null) {
+
+function renderDensityTrendModal(trend = null) {
     ensureDensityTrendCharts();
     if (!state.densityTrendModalChart) {
         return;
     }
 
     const selectedKey = state.densitySelectedCellKey;
-    if (!selectedKey) {
+    const data = trend || (selectedKey ? buildDensityTrendDataset(selectedKey) : null);
+    if (!data || !data.labels.length || !data.hasData) {
         clearDensityTrendModal();
+        if (state.densityTrendModalSubtitle) {
+            state.densityTrendModalSubtitle.textContent = `网格 ${selectedKey || "-"}，共 0 个时间段`;
+        }
         return;
     }
 
-    try {
-        const data = trend || await loadCellTrend(selectedKey);
-
-        if (!data || !data.labels.length || !data.hasData) {
-            clearDensityTrendModal();
-            if (state.densityTrendModalSubtitle) {
-                state.densityTrendModalSubtitle.textContent = `网格 ${selectedKey}，共 0 个时间段`;
-            }
-            return;
-        }
-
-        if (state.densityTrendModalSubtitle) {
-            state.densityTrendModalSubtitle.textContent = `网格 ${selectedKey}，共 ${formatCount(data.labels.length)} 个时间段`;
-        }
-
-        state.densityTrendModalChart.setOption(buildDensityModalOption(data), true);
-    } catch (error) {
-        console.error("加载趋势弹窗失败:", error);
-        clearDensityTrendModal();
+    if (state.densityTrendModalSubtitle) {
+        state.densityTrendModalSubtitle.textContent = `网格 ${selectedKey || "-"}，共 ${formatCount(data.labels.length)} 个时间段`;
     }
+    state.densityTrendModalChart.setOption(buildDensityModalOption(data), true);
 }
-    
+
 function openDensityTrendModal() {
     ensureDensityTrendCharts();
     if (!state.densityTrendModal) {
@@ -1987,21 +2001,16 @@ function closeDensityTrendModal() {
 }
 
 function buildDensityCellMaps() {
-    // This function is deprecated with new 3-part API design
-    // Cell lookup now done directly from densityBucketCache
-    if (!state.densityMeta) {
-        state.densityCellMaps = new Map();
-        return;
-    }
-    // Populate Map with current bucket's cells for backward compatibility
-    const currentBucket = state.densityBucketCache.get(state.currentBucketIndex);
-    if (currentBucket?.cells) {
+    const buckets = state.densityResult?.buckets || [];
+    state.densityRenderModel = null;
+    state.densityCellMaps = buckets.map((bucket) => {
         const map = new Map();
-        for (const cell of currentBucket.cells) {
+        for (const cell of bucket.cells || []) {
             map.set(`${cell.gx}:${cell.gy}`, cell);
         }
-        state.densityCellMaps.set(state.currentBucketIndex, map);
-    }
+        return map;
+    });
+    buildDensityChunkMaps();
 }
 
 function updateDensityTimeLabel() {
@@ -2540,13 +2549,14 @@ function updateTrendSummary(key, cell) {
     renderInfoPanel("density-trend-summary", [
         ["网格", key],
         ["时间段", getBucketLabel(bucket)],
+        ["车辆数", formatCount(cell.vehicleCount)],
         ["密度", Number(cell.vehicleDensity || 0).toFixed(2)]
     ]);
 }
 
 function installDensityMapInteractions() {
     state.map.addEventListener("mousemove", (event) => {
-        if (!state.densityMeta) {
+        if (!state.densityResult) {
             hideDensityTooltip();
             return;
         }
@@ -2563,6 +2573,7 @@ function installDensityMapInteractions() {
         const html = [
             `<div><strong>网格:</strong> ${escapeHtml(hit.key)}</div>`,
             `<div><strong>时间段:</strong> ${escapeHtml(getBucketLabel(bucket))}</div>`,
+            `<div><strong>车辆数:</strong> ${escapeHtml(formatCount(hit.cell.vehicleCount))}</div>`,
             `<div><strong>密度:</strong> ${escapeHtml(Number(hit.cell.vehicleDensity || 0).toFixed(2))}</div>`
         ].join("");
         const pixel = pointToOverlayPixel(event.point.lng, event.point.lat);
@@ -2574,25 +2585,29 @@ function installDensityMapInteractions() {
     });
 
     state.map.addEventListener("click", (event) => {
-    if (!state.densityMeta) {
-        return;
-    }
+        if (!state.densityResult) {
+            return;
+        }
+        const hit = tryGetCellByPoint(event.point);
+        if (!hit) {
+            state.densitySelectedCellKey = null;
+            updateTrendSummary(null, null);
+            clearDensityTrendPreview();
+            clearDensityTrendModal();
+            drawDensityBucket();
+            return;
+        }
 
-    const hit = tryGetCellByPoint(event.point);
-    if (!hit) {
-        state.densitySelectedCellKey = null;
-        updateTrendSummary(null, null);
-        clearDensityTrendPreview();
-        clearDensityTrendModal();
-        drawDensityBucket();
-        return;
-    }
-
-    state.densitySelectedCellKey = hit.key;
-    updateTrendSummary(hit.key, hit.cell);
-    renderSelectedCellTrend();
-    drawDensityBucket();
+        state.densitySelectedCellKey = hit.key;
+        updateTrendSummary(hit.key, hit.cell);
+        loadCellTrend(hit.key).then(trend => {
+    state.densityTrendPreviewChart.setOption({
+        xAxis: { data: trend.labels },
+        series: [{ data: trend.densityValues }]
+    });
 });
+        drawDensityBucket();
+    });
 }
 
 function stopDensityPlayback() {
@@ -2605,17 +2620,23 @@ function stopDensityPlayback() {
 }
 
 function startDensityPlayback() {
-    if (!state.densityMeta || state.densityMeta.bucketCount <= 1) {
+    if (!state.densityResult || !state.densityResult.buckets || state.densityResult.buckets.length <= 1) {
         return;
     }
     stopDensityPlayback();
     setText("density-play", "暂停");
     state.densityPlayTimer = setInterval(() => {
-        const next = (state.currentBucketIndex + 1) % state.densityMeta.bucketCount;
+        const next = (state.currentBucketIndex + 1) % state.densityResult.buckets.length;
         setDensityBucketIndex(next);
         if (state.densitySelectedCellKey) {
             const selected = getDensityCellByKey(state.currentBucketIndex, state.densitySelectedCellKey);
             updateTrendSummary(state.densitySelectedCellKey, selected || null);
+            loadCellTrend(hit.key).then(trend => {
+    state.densityTrendPreviewChart.setOption({
+        xAxis: { data: trend.labels },
+        series: [{ data: trend.densityValues }]
+    });
+});
         }
     }, 750);
 }
@@ -2647,30 +2668,6 @@ async function runDensityQuery() {
         payload.maxLat = state.region.maxLat;
     }
 
-    // 检查查询参数是否改变（判断是否需要清除缓存）
-    const newParams = {
-        startTime,
-        endTime,
-        intervalMinutes,
-        cellSizeMeters,
-        minLon: payload.minLon,
-        minLat: payload.minLat,
-        maxLon: payload.maxLon,
-        maxLat: payload.maxLat
-    };
-
-    const paramsChanged = !state.densityQueryParams || 
-        JSON.stringify(state.densityQueryParams) !== JSON.stringify(newParams);
-
-    if (paramsChanged) {
-        // 查询条件改变了，需要清除缓存但保留UI状态
-        clearDensityCacheOnly();
-        clearDensityQueryState();
-    } else {
-        // 查询条件没变，只清除查询UI状态，保留缓存
-        clearDensityQueryState();
-    }
-
     // ✅ 1. 请求 meta
     const meta = await requestJson("/api/density/meta", {
         method: "POST",
@@ -2679,8 +2676,12 @@ async function runDensityQuery() {
 
     state.densityMeta = meta;
     state.densityQueryId = meta.queryId;
-    state.densityQueryParams = newParams;
     state.currentBucketIndex = 0;
+
+    state.densityBucketCache.clear();
+    state.densityCellMaps.clear();
+    state.densityChunkMaps.clear();
+    state.densityTrendCache.clear();
 
     // ✅ 2. 加载第一个 bucket
     await ensureDensityBucketLoaded(0);
@@ -2717,11 +2718,7 @@ async function ensureDensityBucketLoaded(bucketIndex) {
     const meta = state.densityMeta;
 
     const cells = (bucket.cells || []).map(([gx, gy, seconds]) => {
-        // 密度 = 停留时间 / (时间段长度 * 网格面积)
         const density = (seconds / meta.bucketSeconds) / meta.cellAreaKm2;
-        
-        
-        
         return {
             gx,
             gy,
@@ -2745,7 +2742,6 @@ async function ensureDensityBucketLoaded(bucketIndex) {
     state.densityCellMaps.set(bucketIndex, map);
 
     trimDensityBucketCache(bucketIndex);
-    // 后台预加载相邻的 bucket（不 await、不递归）
     prefetchDensityBuckets(bucketIndex);
 
     return bucketData;

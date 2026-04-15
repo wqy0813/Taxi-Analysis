@@ -44,7 +44,7 @@ public:
     static bool loadFromDatabase(DatabaseManager& dbm);
     static bool loadAllPoints(DatabaseManager& dbm);
     static const std::vector<GPSPoint>& getAllPoints() { return allPoints; }
-
+    static const std::unordered_map<int, VehicleRange>& getIdToRange() { return idToRange; }
     static void buildQuadTree(const AppConfig& config);
     static bool hasQuadTree();
 
