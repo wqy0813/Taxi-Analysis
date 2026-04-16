@@ -1,4 +1,5 @@
-﻿import { state, API_BASE } from "./state.js";
+import { state, API_BASE } from "./state.js";
+import { tableFromIPC } from "https://cdn.jsdelivr.net/npm/apache-arrow@15.0.2/+esm";
 
 function qs(id) {
     return document.getElementById(id);
@@ -83,6 +84,51 @@ async function requestJson(url, options = {}) {
     return payload.data;
 }
 
+async function requestArrow(url, options = {}) {
+    const response = await fetch(`${API_BASE}${url}`, {
+        headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/vnd.apache.arrow.stream"
+        },
+        ...options
+    });
+
+    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+    if (!response.ok || contentType.includes("application/json")) {
+        const text = await response.text();
+        if (!text) {
+            throw new Error(`请求失败：${response.status} ${response.statusText}`);
+        }
+        let payload;
+        try {
+            payload = JSON.parse(text);
+        } catch (error) {
+            throw new Error(`请求失败：${response.status} ${response.statusText}`);
+        }
+        throw new Error(payload.error?.message || "请求失败");
+    }
+
+    const buffer = await response.arrayBuffer();
+    const table = tableFromIPC(new Uint8Array(buffer));
+    const fields = table.schema.fields;
+    const columns = fields.map((_, index) => table.getChildAt(index));
+    const rows = [];
+
+    for (let i = 0; i < table.numRows; i += 1) {
+        const row = {};
+        for (let j = 0; j < fields.length; j += 1) {
+            let value = columns[j]?.get(i);
+            if (typeof value === "bigint") {
+                value = Number(value);
+            }
+            row[fields[j].name] = value;
+        }
+        rows.push(row);
+    }
+
+    return rows;
+}
+
 function parseDateTimeInput(value, label) {
     if (!value) {
         throw new Error(`${label} 不能为空`);
@@ -156,6 +202,7 @@ export {
     formatCount,
     formatDateTime,
     requestJson,
+    requestArrow,
     parseDateTimeInput,
     ensureRegion,
     ensureTimeRange,

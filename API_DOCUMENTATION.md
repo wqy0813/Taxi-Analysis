@@ -1,10 +1,23 @@
 # Taxi Analysis 接口文档
 
+<<<<<<< ours
 本文档按当前代码库中的 `src/httpserver.cpp` 实际实现整理，目的是让你快速判断哪些接口后续需要改造。
+=======
+<<<<<<< ours
+本文档按当前代码库中的 `src/httpserver.cpp` 实际实现整理，目的是让你快速判断哪些接口后续需要改造。
+=======
+最后更新：2026-04-16  
+依据代码：`src/httpserver.cpp`
+>>>>>>> theirs
+>>>>>>> theirs
 
 ## 1. 基础约定
 
 ### 1.1 服务地址
+<<<<<<< ours
+=======
+<<<<<<< ours
+>>>>>>> theirs
 - 本地调试默认地址：`http://127.0.0.1:8080`
 
 ### 1.2 通信协议
@@ -15,6 +28,18 @@
 ### 1.3 通用响应格式
 成功：
 
+<<<<<<< ours
+=======
+=======
+- 本地默认：`http://127.0.0.1:8080`
+
+### 1.2 协议与返回格式
+- 业务请求：JSON
+- 业务响应：JSON
+
+成功响应：
+>>>>>>> theirs
+>>>>>>> theirs
 ```json
 {
   "success": true,
@@ -22,8 +47,17 @@
 }
 ```
 
+<<<<<<< ours
 失败：
 
+=======
+<<<<<<< ours
+失败：
+
+=======
+失败响应：
+>>>>>>> theirs
+>>>>>>> theirs
 ```json
 {
   "success": false,
@@ -34,6 +68,10 @@
 }
 ```
 
+<<<<<<< ours
+=======
+<<<<<<< ours
+>>>>>>> theirs
 ### 1.4 通用错误码
 - `INVALID_JSON`：请求体不是合法 JSON
 - `INVALID_ARGUMENT`：参数缺失或非法
@@ -92,6 +130,50 @@
 
 示例：
 
+<<<<<<< ours
+=======
+=======
+### 1.3 通用错误码
+- `INVALID_JSON`: 请求体不是合法 JSON 对象
+- `INVALID_ARGUMENT`: 参数缺失或非法
+- `ANALYSIS_FAILED`: 密度分析执行失败
+- `NOT_FOUND`: 资源不存在（常见于密度缓存过期）
+- `FILE_ERROR`: 静态文件读取失败
+
+### 1.4 CORS
+- `Access-Control-Allow-Origin: *`
+- `Access-Control-Allow-Headers: Content-Type`
+- `Access-Control-Allow-Methods: GET, POST, OPTIONS`
+
+---
+
+## 2. 路由总览
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| OPTIONS | `/*` | CORS 预检 |
+| GET | `/` | 返回前端 `index.html` |
+| GET | `/api/health` | 健康检查 |
+| GET | `/api/meta` | 地图与数据基础信息 |
+| POST | `/api/trajectory` | 单车轨迹或全量车辆视野查询 |
+| POST | `/api/region-search` | 区域 + 时间范围统计 |
+| POST | `/api/density/meta` | 发起/复用密度分析，返回元信息 |
+| POST | `/api/density/bucket` | 按时间桶取密度网格数据 |
+| POST | `/api/density/cell-trend` | 按网格取时序趋势 |
+
+---
+
+## 3. 基础接口
+
+### 3.1 GET `/api/health`
+
+响应字段：
+- `status`: 固定为 `ok`
+- `pointsLoaded`: 已加载点数量
+
+示例：
+>>>>>>> theirs
+>>>>>>> theirs
 ```json
 {
   "success": true,
@@ -102,6 +184,10 @@
 }
 ```
 
+<<<<<<< ours
+=======
+<<<<<<< ours
+>>>>>>> theirs
 ### 4.2 地图与全局配置
 - 请求方法：`GET`
 - 请求路径：`/api/meta`
@@ -468,3 +554,188 @@
 - `/api/density/bucket`
 - `/api/density/cell-trend`
 
+<<<<<<< ours
+=======
+=======
+### 3.2 GET `/api/meta`
+
+响应字段：
+- `minLon`, `maxLon`, `minLat`, `maxLat`
+- `centerLon`, `centerLat`
+- `initialZoom`, `minZoom`, `maxZoom`
+- `totalPoints`
+- `baiduMapAk`
+
+---
+
+## 4. 轨迹查询
+
+### 4.1 POST `/api/trajectory`
+
+请求体（通用）：
+- `taxiId` (number, required)
+
+#### 场景 A：`taxiId > 0`（单车轨迹）
+
+请求体：
+```json
+{
+  "taxiId": 123
+}
+```
+
+响应：
+- `mode = "trajectory"`
+- `points`: 轨迹点数组（`id`, `timestamp`, `lon`, `lat`）
+
+#### 场景 B：`taxiId = 0`（全量车辆视野）
+
+额外必填：
+- `minLon`, `minLat`, `maxLon`, `maxLat`
+- 建议传 `zoom`（不传时后端默认 12）
+
+请求体：
+```json
+{
+  "taxiId": 0,
+  "minLon": 116.2,
+  "minLat": 39.8,
+  "maxLon": 116.6,
+  "maxLat": 40.0,
+  "zoom": 16
+}
+```
+
+响应模式：
+- 当 `zoom >= 18` 且点数 `<= 12000`：`mode = "raw"`
+- 否则：`mode = "cluster"`
+
+`cluster` 模式点字段：
+- `lng`, `lat`, `count`, `isCluster`
+- `minLon`, `minLat`, `maxLon`, `maxLat`
+
+常见错误：
+- `taxiId < 0`
+- `taxiId = 0` 但缺少边界参数
+- 地图边界非法（`min >= max`）
+
+---
+
+## 5. 区域查询
+
+### 5.1 POST `/api/region-search`
+
+请求体：
+- `minLon`, `minLat`, `maxLon`, `maxLat`（required）
+- `startTime`, `endTime`（required，number 或 string，后端转为 int64）
+
+示例：
+```json
+{
+  "minLon": 116.2,
+  "minLat": 39.8,
+  "maxLon": 116.6,
+  "maxLat": 40.0,
+  "startTime": 1202190000,
+  "endTime": 1202211600
+}
+```
+
+响应字段：
+- `pointCount`
+- `vehicleCount`
+- `elapsedSeconds`
+
+常见错误：
+- 区域非法（`min >= max`）
+- 时间范围非法（`startTime > endTime`）
+
+---
+
+## 6. 密度分析接口（3 段式）
+
+当前密度分析为 3 段式：
+1. `meta`：创建或复用分析缓存，返回 `queryId`
+2. `bucket`：按时间桶拉网格数据
+3. `cell-trend`：按网格拉完整时间序列
+
+### 6.1 POST `/api/density/meta`
+
+请求体：
+- `startTime`, `endTime`（required）
+- `intervalMinutes`（optional，默认 30）
+- `cellSizeMeters`（optional，默认 500）
+- 可选区域：`minLon`, `minLat`, `maxLon`, `maxLat`
+
+区域参数规则：
+- 四个边界字段必须同时提供才会生效
+- 如果只传部分字段，返回 `INVALID_ARGUMENT`
+- 不传区域字段时，使用全图范围（配置中的 map bounds）
+
+响应关键字段：
+- `queryId`
+- `regionSource`：`selection` 或 `full-map`
+- `bucketSeconds`, `cellAreaKm2`
+- `columnCount`, `rowCount`, `bucketCount`, `gridCount`
+- `maxVehicleDensity`
+- `totalPointCount`, `totalVehicleCount`
+- `elapsedSeconds`, `cacheFetchCostMs`
+- `buckets`: 每个时间桶摘要（`startTime`, `endTime`, `nonZeroCount`, `maxDensity`）
+
+### 6.2 POST `/api/density/bucket`
+
+请求体：
+- `queryId` (string, required)
+- `bucketIndex` (int, required)
+
+响应字段：
+- `queryId`, `bucketIndex`, `startTime`, `endTime`
+- `nonZeroCount`, `bucketSeconds`
+- `cells`: 数组，每项为 `[gx, gy, seconds]`，仅返回 `seconds > 0` 的网格
+
+常见错误：
+- 缺少 `queryId`
+- `bucketIndex` 非整数或越界
+- `queryId` 对应缓存不存在或已过期（`NOT_FOUND`）
+
+### 6.3 POST `/api/density/cell-trend`
+
+请求体：
+- `queryId` (string, required)
+- `gx` (int, required)
+- `gy` (int, required)
+
+响应字段：
+- `queryId`, `gx`, `gy`
+- `series`: 数组，每项为 `[bucketIndex, startTime, endTime, seconds]`
+
+说明：
+- `series` 会覆盖全部时间桶（即使某些桶 `seconds=0` 也会返回）
+
+---
+
+## 7. 静态资源
+
+### 7.1 GET `/`
+- 返回 `web/index.html`
+- 若文件不存在：`404 + NOT_FOUND`
+- 若读取失败：`500 + FILE_ERROR`
+
+### 7.2 静态挂载
+- 服务端通过 `set_mount_point("/", webRoot)` 挂载 `web` 目录
+- 可直接访问前端静态资源（如 `/css/style.css`, `/js/app.js`）
+
+---
+
+## 8. 与旧版差异（已废弃）
+
+以下接口/行为不再使用：
+- 单接口全量密度：`POST /api/density`
+- 一次性返回所有桶所有网格的旧密度结构
+
+前端应始终使用：
+- `/api/density/meta`
+- `/api/density/bucket`
+- `/api/density/cell-trend`
+>>>>>>> theirs
+>>>>>>> theirs

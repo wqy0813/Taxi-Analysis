@@ -3,7 +3,7 @@ import {
     DENSITY_CHUNK_CACHE_LIMIT,
     DENSITY_CHUNK_PREFETCH_MARGIN
 } from "../../core/state.js";
-import { qs, setText, renderInfoPanel, formatDateTime, requestJson } from "../../core/utils.js";
+import { qs, setText, renderInfoPanel, formatDateTime, requestArrow } from "../../core/utils.js";
 import { pointToOverlayPixel, requestDensityRedraw, cancelDensityRedraw, clearDensityOverlay } from "../../map/map.js";
 import { closeDensityTrendModal, clearDensityTrendPreview, clearDensityTrendModal, ensureDensityTrendCharts, renderDensityTrendModal, buildDensityPreviewOption } from "./densityChart.js";
 
@@ -559,7 +559,7 @@ async function loadCellTrend(cellKey) {
 
     const [gx, gy] = cellKey.split(":").map(Number);
 
-    const trend = await requestJson("/api/density/cell-trend", {
+    const rows = await requestArrow("/api/density/cell-trend", {
         method: "POST",
         body: JSON.stringify({
             queryId: state.densityQueryId,
@@ -568,19 +568,20 @@ async function loadCellTrend(cellKey) {
         })
     });
 
-    const cells = trend.series.map(s => ({
+    const sortedRows = rows.slice().sort((a, b) => Number(a.bucketIndex) - Number(b.bucketIndex));
+    const cells = sortedRows.map((item) => ({
         gx,
         gy,
-        seconds: s[3],
-        vehicleDensity: (s[3] / state.densityMeta.bucketSeconds) / state.densityMeta.cellAreaKm2,
+        seconds: Number(item.seconds || 0),
+        vehicleDensity: (Number(item.seconds || 0) / state.densityMeta.bucketSeconds) / state.densityMeta.cellAreaKm2,
         pointCount: 0
     }));
 
     const data = {
-        labels: trend.series.map(s => getBucketShortLabel({ startTime: s[1] })),
-        fullLabels: trend.series.map(s => {
-            const startTime = s[1];
-            const endTime = s[2];
+        labels: sortedRows.map((item) => getBucketShortLabel({ startTime: Number(item.startTime) })),
+        fullLabels: sortedRows.map((item) => {
+            const startTime = Number(item.startTime);
+            const endTime = Number(item.endTime);
             return `${formatDateTime(startTime)} - ${formatDateTime(endTime)}`;
         }),
         densityValues: cells.map(c => c.vehicleDensity),
@@ -607,7 +608,7 @@ async function loadDensityBucketInBackground(bucketIndex) {
     }
 
     try {
-        const bucket = await requestJson("/api/density/bucket", {
+        const rows = await requestArrow("/api/density/bucket", {
             method: "POST",
             body: JSON.stringify({
                 queryId: state.densityQueryId,
@@ -616,12 +617,18 @@ async function loadDensityBucketInBackground(bucketIndex) {
         });
 
         const meta = state.densityMeta;
-        const cells = (bucket.cells || []).map(([gx, gy, seconds]) => {
-            const density = (seconds / meta.bucketSeconds) / meta.cellAreaKm2;
-            return { gx, gy, seconds, vehicleDensity: density };
+        const cells = rows.map(({ gx, gy, seconds }) => {
+            const gxNum = Number(gx);
+            const gyNum = Number(gy);
+            const secondsNum = Number(seconds || 0);
+            const density = (secondsNum / meta.bucketSeconds) / meta.cellAreaKm2;
+            return { gx: gxNum, gy: gyNum, seconds: secondsNum, vehicleDensity: density };
         });
 
-        const bucketData = { bucketIndex, startTime: bucket.startTime, endTime: bucket.endTime, cells };
+        const summary = meta?.buckets?.[bucketIndex];
+        const startTime = Number(summary?.startTime ?? (meta.startTime + bucketIndex * meta.bucketSeconds));
+        const endTime = Number(summary?.endTime ?? Math.min(startTime + meta.bucketSeconds - 1, meta.endTime));
+        const bucketData = { bucketIndex, startTime, endTime, cells };
         state.densityBucketCache.set(bucketIndex, bucketData);
 
         const map = new Map();
@@ -692,7 +699,7 @@ async function ensureDensityBucketLoaded(bucketIndex) {
         return state.densityBucketCache.get(bucketIndex);
     }
 
-    const bucket = await requestJson("/api/density/bucket", {
+    const rows = await requestArrow("/api/density/bucket", {
         method: "POST",
         body: JSON.stringify({
             queryId: state.densityQueryId,
@@ -701,20 +708,27 @@ async function ensureDensityBucketLoaded(bucketIndex) {
     });
 
     const meta = state.densityMeta;
-    const cells = (bucket.cells || []).map(([gx, gy, seconds]) => {
-        const density = (seconds / meta.bucketSeconds) / meta.cellAreaKm2;
+    const cells = rows.map(({ gx, gy, seconds }) => {
+        const gxNum = Number(gx);
+        const gyNum = Number(gy);
+        const secondsNum = Number(seconds || 0);
+        const density = (secondsNum / meta.bucketSeconds) / meta.cellAreaKm2;
         return {
-            gx,
-            gy,
-            seconds,
+            gx: gxNum,
+            gy: gyNum,
+            seconds: secondsNum,
             vehicleDensity: density
         };
     });
 
+    const summary = meta?.buckets?.[bucketIndex];
+    const startTime = Number(summary?.startTime ?? (meta.startTime + bucketIndex * meta.bucketSeconds));
+    const endTime = Number(summary?.endTime ?? Math.min(startTime + meta.bucketSeconds - 1, meta.endTime));
+
     const bucketData = {
         bucketIndex,
-        startTime: bucket.startTime,
-        endTime: bucket.endTime,
+        startTime,
+        endTime,
         cells
     };
 

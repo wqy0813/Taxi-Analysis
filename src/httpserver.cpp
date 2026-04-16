@@ -5,6 +5,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <cstdint>
+#include <cstring>
+#include <algorithm>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -12,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <atomic>
 #include <unordered_map>
 #include "datamanager.h"
 #include "densityanalysis.h"
@@ -328,6 +332,485 @@ std::string readTextFile(const fs::path& path) {
     std::ostringstream oss;
     oss << fin.rdbuf();
     return oss.str();
+}
+
+constexpr const char* kArrowStreamContentType = "application/vnd.apache.arrow.stream";
+
+enum class ArrowPrimitiveType {
+    Int32,
+    Int64,
+    Float64
+};
+
+struct ArrowFieldSpec {
+    std::string name;
+    ArrowPrimitiveType type;
+};
+
+struct ArrowBufferRange {
+    std::int64_t offset = 0;
+    std::int64_t length = 0;
+};
+
+struct DensityBucketArrowRow {
+    std::int32_t gx = 0;
+    std::int32_t gy = 0;
+    double seconds = 0.0;
+};
+
+struct DensityTrendArrowRow {
+    std::int32_t bucketIndex = 0;
+    std::int64_t startTime = 0;
+    std::int64_t endTime = 0;
+    double seconds = 0.0;
+};
+
+template <typename T>
+void appendScalarLE(std::vector<std::uint8_t>& out, T value) {
+    const std::size_t start = out.size();
+    out.resize(start + sizeof(T));
+    std::memcpy(out.data() + start, &value, sizeof(T));
+}
+
+template <typename T>
+void writeScalarLEAt(std::vector<std::uint8_t>& out, std::size_t offset, T value) {
+    std::memcpy(out.data() + offset, &value, sizeof(T));
+}
+
+void alignBuffer(std::vector<std::uint8_t>& out, std::size_t alignment) {
+    if (alignment == 0) {
+        return;
+    }
+    const std::size_t remain = out.size() % alignment;
+    if (remain == 0) {
+        return;
+    }
+    out.resize(out.size() + (alignment - remain), 0);
+}
+
+void patchUOffset(std::vector<std::uint8_t>& out, std::size_t slotPos, std::size_t targetPos) {
+    const std::uint32_t offset = static_cast<std::uint32_t>(targetPos - slotPos);
+    writeScalarLEAt<std::uint32_t>(out, slotPos, offset);
+}
+
+class FlatbufferTableBuilder {
+public:
+    FlatbufferTableBuilder(std::vector<std::uint8_t>& out, std::uint16_t fieldCount)
+        : out_(out), fieldCount_(fieldCount), present_(fieldCount, false) {
+        alignBuffer(out_, 8);
+        start_ = out_.size();
+        appendScalarLE<std::int32_t>(out_, 0); // soffset to vtable
+        out_.resize(out_.size() + static_cast<std::size_t>(fieldCount_) * kSlotStride, 0);
+    }
+
+    std::size_t setUOffsetField(std::uint16_t fieldIndex) {
+        present_[fieldIndex] = true;
+        return slotPos(fieldIndex);
+    }
+
+    void setBoolField(std::uint16_t fieldIndex, bool value) {
+        present_[fieldIndex] = true;
+        writeScalarLEAt<std::uint8_t>(out_, slotPos(fieldIndex), value ? 1u : 0u);
+    }
+
+    void setU8Field(std::uint16_t fieldIndex, std::uint8_t value) {
+        present_[fieldIndex] = true;
+        writeScalarLEAt<std::uint8_t>(out_, slotPos(fieldIndex), value);
+    }
+
+    void setI16Field(std::uint16_t fieldIndex, std::int16_t value) {
+        present_[fieldIndex] = true;
+        writeScalarLEAt<std::int16_t>(out_, slotPos(fieldIndex), value);
+    }
+
+    void setI32Field(std::uint16_t fieldIndex, std::int32_t value) {
+        present_[fieldIndex] = true;
+        writeScalarLEAt<std::int32_t>(out_, slotPos(fieldIndex), value);
+    }
+
+    void setI64Field(std::uint16_t fieldIndex, std::int64_t value) {
+        present_[fieldIndex] = true;
+        writeScalarLEAt<std::int64_t>(out_, slotPos(fieldIndex), value);
+    }
+
+    std::size_t finish() {
+        alignBuffer(out_, 2);
+        const std::size_t vtableStart = out_.size();
+        const std::uint16_t vtableSize = static_cast<std::uint16_t>(4 + fieldCount_ * 2);
+        const std::uint16_t objectSize = static_cast<std::uint16_t>(4 + fieldCount_ * kSlotStride);
+
+        appendScalarLE<std::uint16_t>(out_, vtableSize);
+        appendScalarLE<std::uint16_t>(out_, objectSize);
+        for (std::uint16_t i = 0; i < fieldCount_; ++i) {
+            const std::uint16_t fieldOffset = present_[i]
+                ? static_cast<std::uint16_t>(4 + i * kSlotStride)
+                : 0;
+            appendScalarLE<std::uint16_t>(out_, fieldOffset);
+        }
+
+        const std::int32_t soffset = static_cast<std::int32_t>(start_ - vtableStart);
+        writeScalarLEAt<std::int32_t>(out_, start_, soffset);
+        return start_;
+    }
+
+private:
+    std::size_t slotPos(std::uint16_t fieldIndex) const {
+        return start_ + 4 + static_cast<std::size_t>(fieldIndex) * kSlotStride;
+    }
+
+private:
+    static constexpr std::uint16_t kSlotStride = 8;
+
+    std::vector<std::uint8_t>& out_;
+    std::uint16_t fieldCount_;
+    std::size_t start_{0};
+    std::vector<bool> present_;
+};
+
+std::size_t addString(std::vector<std::uint8_t>& out, const std::string& value) {
+    alignBuffer(out, 4);
+    const std::size_t start = out.size();
+    appendScalarLE<std::uint32_t>(out, static_cast<std::uint32_t>(value.size()));
+    out.insert(out.end(), value.begin(), value.end());
+    out.push_back(0);
+    return start;
+}
+
+std::size_t addEmptyOffsetVector(std::vector<std::uint8_t>& out) {
+    alignBuffer(out, 4);
+    const std::size_t start = out.size();
+    appendScalarLE<std::uint32_t>(out, 0);
+    return start;
+}
+
+template <typename BuildElementFn>
+std::size_t addOffsetVector(std::vector<std::uint8_t>& out,
+                            std::size_t count,
+                            const BuildElementFn& buildElement) {
+    alignBuffer(out, 4);
+    const std::size_t start = out.size();
+    appendScalarLE<std::uint32_t>(out, static_cast<std::uint32_t>(count));
+
+    std::vector<std::size_t> slots;
+    slots.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        slots.push_back(out.size());
+        appendScalarLE<std::uint32_t>(out, 0);
+    }
+
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::size_t targetPos = buildElement(i);
+        patchUOffset(out, slots[i], targetPos);
+    }
+    return start;
+}
+
+std::size_t addFieldNodeVector(std::vector<std::uint8_t>& out, std::int64_t rowCount, std::size_t fieldCount) {
+    alignBuffer(out, 8);
+    const std::size_t start = out.size();
+    appendScalarLE<std::uint32_t>(out, static_cast<std::uint32_t>(fieldCount));
+    for (std::size_t i = 0; i < fieldCount; ++i) {
+        appendScalarLE<std::int64_t>(out, rowCount);
+        appendScalarLE<std::int64_t>(out, 0);
+    }
+    return start;
+}
+
+std::size_t addBufferVector(std::vector<std::uint8_t>& out, const std::vector<ArrowBufferRange>& buffers) {
+    alignBuffer(out, 8);
+    const std::size_t start = out.size();
+    appendScalarLE<std::uint32_t>(out, static_cast<std::uint32_t>(buffers.size()));
+    for (const auto& buffer : buffers) {
+        appendScalarLE<std::int64_t>(out, buffer.offset);
+        appendScalarLE<std::int64_t>(out, buffer.length);
+    }
+    return start;
+}
+
+std::size_t buildIntTypeTable(std::vector<std::uint8_t>& out, std::int32_t bitWidth) {
+    FlatbufferTableBuilder table(out, 2);
+    table.setI32Field(0, bitWidth);
+    table.setBoolField(1, true);
+    return table.finish();
+}
+
+std::size_t buildFloatingPointTypeTable(std::vector<std::uint8_t>& out) {
+    FlatbufferTableBuilder table(out, 1);
+    table.setI16Field(0, 2); // DOUBLE
+    return table.finish();
+}
+
+std::uint8_t getArrowTypeUnionCode(ArrowPrimitiveType type) {
+    switch (type) {
+        case ArrowPrimitiveType::Float64:
+            return 3; // FloatingPoint
+        case ArrowPrimitiveType::Int32:
+        case ArrowPrimitiveType::Int64:
+            return 2; // Int
+    }
+    return 0;
+}
+
+std::size_t buildFieldTable(std::vector<std::uint8_t>& out, const ArrowFieldSpec& field) {
+    FlatbufferTableBuilder table(out, 7);
+    const std::size_t nameSlot = table.setUOffsetField(0);
+    table.setBoolField(1, true);
+    table.setU8Field(2, getArrowTypeUnionCode(field.type));
+    const std::size_t typeSlot = table.setUOffsetField(3);
+    const std::size_t childrenSlot = table.setUOffsetField(5);
+    const std::size_t tablePos = table.finish();
+
+    const std::size_t namePos = addString(out, field.name);
+    patchUOffset(out, nameSlot, namePos);
+
+    std::size_t typePos = 0;
+    if (field.type == ArrowPrimitiveType::Float64) {
+        typePos = buildFloatingPointTypeTable(out);
+    } else if (field.type == ArrowPrimitiveType::Int64) {
+        typePos = buildIntTypeTable(out, 64);
+    } else {
+        typePos = buildIntTypeTable(out, 32);
+    }
+    patchUOffset(out, typeSlot, typePos);
+
+    const std::size_t childrenPos = addEmptyOffsetVector(out);
+    patchUOffset(out, childrenSlot, childrenPos);
+
+    return tablePos;
+}
+
+std::size_t buildSchemaTable(std::vector<std::uint8_t>& out, const std::vector<ArrowFieldSpec>& fields) {
+    FlatbufferTableBuilder table(out, 4);
+    table.setI16Field(0, 0); // Little-endian
+    const std::size_t fieldsSlot = table.setUOffsetField(1);
+    const std::size_t tablePos = table.finish();
+
+    const std::size_t fieldsVecPos = addOffsetVector(out, fields.size(), [&](std::size_t i) {
+        return buildFieldTable(out, fields[i]);
+    });
+    patchUOffset(out, fieldsSlot, fieldsVecPos);
+    return tablePos;
+}
+
+std::size_t buildRecordBatchTable(std::vector<std::uint8_t>& out,
+                                  std::int64_t rowCount,
+                                  const std::vector<ArrowBufferRange>& buffers,
+                                  std::size_t fieldCount) {
+    FlatbufferTableBuilder table(out, 5);
+    table.setI64Field(0, rowCount);
+    const std::size_t nodesSlot = table.setUOffsetField(1);
+    const std::size_t buffersSlot = table.setUOffsetField(2);
+    const std::size_t tablePos = table.finish();
+
+    const std::size_t nodesPos = addFieldNodeVector(out, rowCount, fieldCount);
+    patchUOffset(out, nodesSlot, nodesPos);
+
+    const std::size_t buffersPos = addBufferVector(out, buffers);
+    patchUOffset(out, buffersSlot, buffersPos);
+
+    return tablePos;
+}
+
+template <typename BuildHeaderFn>
+std::vector<std::uint8_t> buildArrowMessageMetadata(std::uint8_t headerType,
+                                                    std::int64_t bodyLength,
+                                                    const BuildHeaderFn& buildHeader) {
+    std::vector<std::uint8_t> out;
+    out.reserve(512);
+    appendScalarLE<std::uint32_t>(out, 0); // root uoffset
+
+    FlatbufferTableBuilder message(out, 5);
+    message.setI16Field(0, 4); // MetadataVersion::V5
+    message.setU8Field(1, headerType);
+    const std::size_t headerSlot = message.setUOffsetField(2);
+    message.setI64Field(3, bodyLength);
+    const std::size_t messagePos = message.finish();
+
+    const std::size_t headerPos = buildHeader(out);
+    patchUOffset(out, headerSlot, headerPos);
+
+    writeScalarLEAt<std::uint32_t>(out, 0, static_cast<std::uint32_t>(messagePos));
+    return out;
+}
+
+std::vector<std::uint8_t> buildSchemaMessageMetadata(const std::vector<ArrowFieldSpec>& fields) {
+    return buildArrowMessageMetadata(1, 0, [&](std::vector<std::uint8_t>& out) {
+        return buildSchemaTable(out, fields);
+    });
+}
+
+std::vector<std::uint8_t> buildRecordBatchMessageMetadata(std::int64_t rowCount,
+                                                          const std::vector<ArrowBufferRange>& buffers,
+                                                          std::size_t fieldCount,
+                                                          std::int64_t bodyLength) {
+    return buildArrowMessageMetadata(3, bodyLength, [&](std::vector<std::uint8_t>& out) {
+        return buildRecordBatchTable(out, rowCount, buffers, fieldCount);
+    });
+}
+
+void appendArrowStreamMessage(std::vector<std::uint8_t>& out,
+                              const std::vector<std::uint8_t>& metadata,
+                              const std::vector<std::uint8_t>& body) {
+    const std::size_t paddedMetadataSize = ((metadata.size() + 7u) / 8u) * 8u;
+    appendScalarLE<std::int32_t>(out, -1);
+    appendScalarLE<std::int32_t>(out, static_cast<std::int32_t>(paddedMetadataSize));
+    out.insert(out.end(), metadata.begin(), metadata.end());
+    while ((out.size() % 8u) != 0u) {
+        out.push_back(0);
+    }
+    out.insert(out.end(), body.begin(), body.end());
+    while ((out.size() % 8u) != 0u) {
+        out.push_back(0);
+    }
+}
+
+std::string buildArrowStream(const std::vector<ArrowFieldSpec>& fields,
+                             const std::vector<ArrowBufferRange>& buffers,
+                             std::vector<std::uint8_t> body,
+                             std::int64_t rowCount) {
+    alignBuffer(body, 8);
+    const std::int64_t bodyLength = static_cast<std::int64_t>(body.size());
+
+    const std::vector<std::uint8_t> schemaMeta = buildSchemaMessageMetadata(fields);
+    const std::vector<std::uint8_t> recordBatchMeta = buildRecordBatchMessageMetadata(
+        rowCount, buffers, fields.size(), bodyLength
+    );
+
+    std::vector<std::uint8_t> stream;
+    stream.reserve(schemaMeta.size() + recordBatchMeta.size() + body.size() + 96);
+    appendArrowStreamMessage(stream, schemaMeta, {});
+    appendArrowStreamMessage(stream, recordBatchMeta, body);
+    appendScalarLE<std::int32_t>(stream, -1);
+    appendScalarLE<std::int32_t>(stream, 0);
+
+    return std::string(reinterpret_cast<const char*>(stream.data()), stream.size());
+}
+
+std::string buildDensityBucketArrowStream(const DensityCacheEntry& entry, int bucketIndex) {
+    const int columnCount = entry.result.columnCount;
+    const int rowCount = entry.result.rowCount;
+    const int gridSize = columnCount * rowCount;
+    const int base = bucketIndex * gridSize;
+
+    std::vector<DensityBucketArrowRow> rows;
+    rows.reserve(static_cast<std::size_t>(entry.bucketSummaries[static_cast<std::size_t>(bucketIndex)].nonZeroCount));
+
+    for (int i = 0; i < gridSize; ++i) {
+        const float seconds = entry.result.vehicleSeconds[base + i];
+        if (seconds <= 0.0f) {
+            continue;
+        }
+        rows.push_back(DensityBucketArrowRow{
+            static_cast<std::int32_t>(i % columnCount),
+            static_cast<std::int32_t>(i / columnCount),
+            static_cast<double>(seconds)
+        });
+    }
+
+    std::vector<std::uint8_t> body;
+    body.reserve(rows.size() * 24);
+    std::vector<ArrowBufferRange> buffers;
+    buffers.reserve(6);
+
+    alignBuffer(body, 8);
+    const std::int64_t gxOffset = static_cast<std::int64_t>(body.size());
+    buffers.push_back({gxOffset, 0});
+    buffers.push_back({gxOffset, static_cast<std::int64_t>(rows.size() * sizeof(std::int32_t))});
+    for (const auto& row : rows) {
+        appendScalarLE<std::int32_t>(body, row.gx);
+    }
+
+    alignBuffer(body, 8);
+    const std::int64_t gyOffset = static_cast<std::int64_t>(body.size());
+    buffers.push_back({gyOffset, 0});
+    buffers.push_back({gyOffset, static_cast<std::int64_t>(rows.size() * sizeof(std::int32_t))});
+    for (const auto& row : rows) {
+        appendScalarLE<std::int32_t>(body, row.gy);
+    }
+
+    alignBuffer(body, 8);
+    const std::int64_t secondsOffset = static_cast<std::int64_t>(body.size());
+    buffers.push_back({secondsOffset, 0});
+    buffers.push_back({secondsOffset, static_cast<std::int64_t>(rows.size() * sizeof(double))});
+    for (const auto& row : rows) {
+        appendScalarLE<double>(body, row.seconds);
+    }
+
+    const std::vector<ArrowFieldSpec> fields = {
+        {"gx", ArrowPrimitiveType::Int32},
+        {"gy", ArrowPrimitiveType::Int32},
+        {"seconds", ArrowPrimitiveType::Float64}
+    };
+    return buildArrowStream(fields, buffers, std::move(body), static_cast<std::int64_t>(rows.size()));
+}
+
+std::string buildDensityTrendArrowStream(const DensityCacheEntry& entry, int gx, int gy) {
+    const int bucketCount = entry.result.bucketCount;
+    const int columnCount = entry.result.columnCount;
+    const int rowCount = entry.result.rowCount;
+
+    std::vector<DensityTrendArrowRow> rows;
+    rows.reserve(static_cast<std::size_t>(bucketCount));
+
+    for (int b = 0; b < bucketCount; ++b) {
+        const std::size_t idx =
+            static_cast<std::size_t>(b) * static_cast<std::size_t>(columnCount) * static_cast<std::size_t>(rowCount) +
+            static_cast<std::size_t>(gy) * static_cast<std::size_t>(columnCount) +
+            static_cast<std::size_t>(gx);
+        const auto& summary = entry.bucketSummaries[static_cast<std::size_t>(b)];
+
+        rows.push_back(DensityTrendArrowRow{
+            static_cast<std::int32_t>(b),
+            static_cast<std::int64_t>(summary.startTime),
+            static_cast<std::int64_t>(summary.endTime),
+            static_cast<double>(entry.result.vehicleSeconds[idx])
+        });
+    }
+
+    std::vector<std::uint8_t> body;
+    body.reserve(rows.size() * 40);
+    std::vector<ArrowBufferRange> buffers;
+    buffers.reserve(8);
+
+    alignBuffer(body, 8);
+    const std::int64_t bucketIndexOffset = static_cast<std::int64_t>(body.size());
+    buffers.push_back({bucketIndexOffset, 0});
+    buffers.push_back({bucketIndexOffset, static_cast<std::int64_t>(rows.size() * sizeof(std::int32_t))});
+    for (const auto& row : rows) {
+        appendScalarLE<std::int32_t>(body, row.bucketIndex);
+    }
+
+    alignBuffer(body, 8);
+    const std::int64_t startTimeOffset = static_cast<std::int64_t>(body.size());
+    buffers.push_back({startTimeOffset, 0});
+    buffers.push_back({startTimeOffset, static_cast<std::int64_t>(rows.size() * sizeof(std::int64_t))});
+    for (const auto& row : rows) {
+        appendScalarLE<std::int64_t>(body, row.startTime);
+    }
+
+    alignBuffer(body, 8);
+    const std::int64_t endTimeOffset = static_cast<std::int64_t>(body.size());
+    buffers.push_back({endTimeOffset, 0});
+    buffers.push_back({endTimeOffset, static_cast<std::int64_t>(rows.size() * sizeof(std::int64_t))});
+    for (const auto& row : rows) {
+        appendScalarLE<std::int64_t>(body, row.endTime);
+    }
+
+    alignBuffer(body, 8);
+    const std::int64_t secondsOffset = static_cast<std::int64_t>(body.size());
+    buffers.push_back({secondsOffset, 0});
+    buffers.push_back({secondsOffset, static_cast<std::int64_t>(rows.size() * sizeof(double))});
+    for (const auto& row : rows) {
+        appendScalarLE<double>(body, row.seconds);
+    }
+
+    const std::vector<ArrowFieldSpec> fields = {
+        {"bucketIndex", ArrowPrimitiveType::Int32},
+        {"startTime", ArrowPrimitiveType::Int64},
+        {"endTime", ArrowPrimitiveType::Int64},
+        {"seconds", ArrowPrimitiveType::Float64}
+    };
+    return buildArrowStream(fields, buffers, std::move(body), static_cast<std::int64_t>(rows.size()));
 }
 
 } // namespace
@@ -701,56 +1184,16 @@ server.Post("/api/density/bucket", [](const httplib::Request& req, httplib::Resp
         return;
     }
 
-    const int columnCount = entry->result.columnCount;
-    const int rowCount = entry->result.rowCount;
-    const int gridSize = columnCount * rowCount;
-    const int bucketSeconds = entry->request.intervalMinutes * 60;
-    const int base = bucketIndex * gridSize;
-
-    const auto& summary = entry->bucketSummaries[static_cast<std::size_t>(bucketIndex)];
-    const auto t_validate = std::chrono::steady_clock::now();
-    const auto validateMs = std::chrono::duration_cast<std::chrono::milliseconds>(t_validate - t_start).count();
-
-    const auto t_json_begin = std::chrono::steady_clock::now();
-
-    std::ostringstream oss;
-    oss.precision(10);
-
-    oss << "{\"success\":true,\"data\":{";
-    oss << "\"queryId\":\"" << entry->queryId << "\",";
-    oss << "\"bucketIndex\":" << bucketIndex << ",";
-    oss << "\"startTime\":" << summary.startTime << ",";
-    oss << "\"endTime\":" << summary.endTime << ",";
-    oss << "\"nonZeroCount\":" << summary.nonZeroCount << ",";
-    oss << "\"bucketSeconds\":" << bucketSeconds << ",";
-    oss << "\"cells\":[";
-
-    bool firstCell = true;
-    for (int i = 0; i < gridSize; ++i) {
-        const float seconds = entry->result.vehicleSeconds[base + i];
-        if (seconds <= 0.0f) {
-            continue;
-        }
-
-        const int gx = i % columnCount;
-        const int gy = i / columnCount;
-
-        if (!firstCell) {
-            oss << ",";
-        }
-        firstCell = false;
-        oss << "[" << gx << "," << gy << "," << seconds << "]";
-    }
-
-    oss << "]}}";
-
-    const auto t_json_end = std::chrono::steady_clock::now();
-    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t_json_end - t_start).count();
+    const std::string payload = buildDensityBucketArrowStream(*entry, bucketIndex);
+    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_start
+    ).count();
 
     Debug() << "[density-bucket] " << totalMs << "ms (bucket:" << bucketIndex 
-            << ", cells:" << summary.nonZeroCount << ")" << std::endl;
+            << ", cells:" << entry->bucketSummaries[static_cast<std::size_t>(bucketIndex)].nonZeroCount
+            << ")" << std::endl;
 
-    res.set_content(oss.str(), "application/json; charset=utf-8");
+    res.set_content(payload, kArrowStreamContentType);
 });
 server.Post("/api/density/cell-trend", [](const httplib::Request& req, httplib::Response& res) {
     const auto t_start = std::chrono::steady_clock::now();
@@ -794,43 +1237,12 @@ server.Post("/api/density/cell-trend", [](const httplib::Request& req, httplib::
         return;
     }
 
-    const int bucketCount = entry->result.bucketCount;
-    const int columnCount = entry->result.columnCount;
-    const int rowCount = entry->result.rowCount;
-    const auto t_validate = std::chrono::steady_clock::now();
-    const auto validateMs = std::chrono::duration_cast<std::chrono::milliseconds>(t_validate - t_start).count();
-
-    const auto t_json_begin = std::chrono::steady_clock::now();
-    
-    std::ostringstream oss;
-    oss.precision(10);
-
-    oss << "{\"success\":true,\"data\":{";
-    oss << "\"queryId\":\"" << entry->queryId << "\",";
-    oss << "\"gx\":" << gx << ",";
-    oss << "\"gy\":" << gy << ",";
-    oss << "\"series\":[";
-
-    bool first = true;
-    for (int b = 0; b < bucketCount; ++b) {
-        const std::size_t idx =
-            static_cast<std::size_t>(b) * static_cast<std::size_t>(columnCount) * static_cast<std::size_t>(rowCount) +
-            static_cast<std::size_t>(gy) * static_cast<std::size_t>(columnCount) +
-            static_cast<std::size_t>(gx);
-
-        const float seconds = entry->result.vehicleSeconds[idx];
-        const auto& summary = entry->bucketSummaries[static_cast<std::size_t>(b)];
-
-        if (!first) {
-            oss << ",";
-        }
-        first = false;
-        oss << "[" << b << "," << summary.startTime << "," << summary.endTime << "," << seconds << "]";
-    }
-
-    oss << "]}}";
-
-    res.set_content(oss.str(), "application/json; charset=utf-8");
+    const std::string payload = buildDensityTrendArrowStream(*entry, gx, gy);
+    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_start
+    ).count();
+    Debug() << "[density-cell-trend] " << totalMs << "ms (gx:" << gx << ", gy:" << gy << ")" << std::endl;
+    res.set_content(payload, kArrowStreamContentType);
 });
 
     server.set_mount_point("/", webRoot.c_str());
