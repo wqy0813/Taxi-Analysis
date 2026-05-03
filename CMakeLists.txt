@@ -29,6 +29,7 @@ set(SOURCES
     src/datamanager.cpp
     src/quadtree.cpp
     src/densityanalysis.cpp
+    src/frequentpathmanager.cpp
     src/httpserver.cpp
     src/logger.cpp
     ${SQLITE_DIR}/sqlite3.c
@@ -39,6 +40,7 @@ set(SOURCES
     include/quadtree.h
     include/utils.h
     include/densityanalysis.h
+    include/frequentpathmanager.h
     include/httpserver.h
     include/logger.h
 )

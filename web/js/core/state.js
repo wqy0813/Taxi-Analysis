@@ -89,6 +89,40 @@
         modalClose: null,
         modalOpen: false,
         lastResult: null
+    },
+
+    frequentPathRegion: {
+        selecting: false,
+        selectingTarget: null,
+        selectionLayer: null,
+        selectionStartPixel: null,
+        selectionEndPixel: null,
+        regionA: null,
+        regionB: null,
+        polygonA: null,
+        polygonB: null,
+        draggingTarget: null,
+        dragStartPoint: null,
+        dragOriginRegion: null,
+        lastResult: null
+    },
+
+    fastestPathRegion: {
+        selecting: false,
+        selectingTarget: null,
+        selectionLayer: null,
+        selectionStartPixel: null,
+        selectionEndPixel: null,
+        regionA: null,
+        regionB: null,
+        polygonA: null,
+        polygonB: null,
+        draggingTarget: null,
+        dragStartPoint: null,
+        dragOriginRegion: null,
+        currentBucketIndex: 0,
+        playTimer: null,
+        lastResult: null
     }
 };
 const DENSITY_CHUNK_CELL_SIZE = 16;

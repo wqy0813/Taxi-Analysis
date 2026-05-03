@@ -286,25 +286,156 @@
                         </div>
                     </div>
                 </div>
+                <div class="tool-item">
+                    <button class="tool-btn" data-panel="frequent-path" type="button" aria-expanded="false">
+                        <span class="tool-btn-title">频繁路径分析 1</span>
+                    </button>
+                    <div class="tool-panel" data-panel="frequent-path">
+                        <div class="panel-body">
+                            <div class="panel-group">
+                                <div class="panel-group-title">参数</div>
+                                <div class="field-grid region-time-grid">
+                                    <div>
+                                        <label for="frequent-path-k">Top K</label>
+                                        <input id="frequent-path-k" type="number" min="1" max="100" step="1" value="10">
+                                    </div>
+                                    <div>
+                                        <label for="frequent-path-length">最小长度（米）</label>
+                                        <input id="frequent-path-length" type="number" min="0" step="100" value="1000">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="panel-group">
+                                <div class="panel-group-title">分析结果</div>
+                                <button id="frequent-path-btn" class="primary wide" type="button">查询</button>
+                                <div id="frequent-path-info" class="info-panel empty">等待查询</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="tool-item">
+                    <button class="tool-btn" data-panel="frequent-path-region" type="button" aria-expanded="false">
+                        <span class="tool-btn-title">频繁路径分析 2</span>
+                    </button>
+                    <div class="tool-panel" data-panel="frequent-path-region">
+                        <div class="panel-body">
+                            <div class="panel-group">
+                                <div class="panel-group-title">区域设置</div>
+                                <div class="action-row compact">
+                                    <button id="frequent-path-region-select-a-btn" class="primary" type="button">框选区域 A</button>
+                                    <button id="frequent-path-region-select-b-btn" class="primary" type="button">框选区域 B</button>
+                                </div>
+                                <div class="action-row compact">
+                                    <button id="frequent-path-region-clear-a-btn" class="ghost" type="button">清空 A</button>
+                                    <button id="frequent-path-region-clear-b-btn" class="ghost" type="button">清空 B</button>
+                                </div>
+                                <div class="two-col-panels">
+                                    <div>
+                                        <label>区域 A</label>
+                                        <div id="frequent-path-region-a-info" class="info-panel empty">区域 A 未设置</div>
+                                    </div>
+                                    <div>
+                                        <label>区域 B</label>
+                                        <div id="frequent-path-region-b-info" class="info-panel empty">区域 B 未设置</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="panel-group">
+                                <div class="panel-group-title">参数</div>
+                                <div class="field-grid region-time-grid">
+                                    <div>
+                                        <label for="frequent-path-region-k">Top K</label>
+                                        <input id="frequent-path-region-k" type="number" min="1" max="100" step="1" value="10">
+                                    </div>
+                                    <div>
+                                        <label for="frequent-path-region-length">最小长度（米）</label>
+                                        <input id="frequent-path-region-length" type="number" min="0" step="100" value="1000">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="panel-group">
+                                <div class="panel-group-title">分析结果</div>
+                                <button id="frequent-path-region-btn" class="primary wide" type="button">查询</button>
+                                <div id="frequent-path-region-info" class="info-panel empty">等待查询</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="tool-item">
+                    <button class="tool-btn" data-panel="fastest-path-region" type="button" aria-expanded="false">
+                        <span class="tool-btn-title">通行时间分析</span>
+                    </button>
+                    <div class="tool-panel" data-panel="fastest-path-region">
+                        <div class="panel-body">
+                            <div class="panel-group">
+                                <div class="panel-group-title">区域设置</div>
+                                <div class="action-row compact">
+                                    <button id="fastest-path-select-a-btn" class="primary" type="button">框选区域 A</button>
+                                    <button id="fastest-path-select-b-btn" class="primary" type="button">框选区域 B</button>
+                                </div>
+                                <div class="action-row compact">
+                                    <button id="fastest-path-clear-a-btn" class="ghost" type="button">清空 A</button>
+                                    <button id="fastest-path-clear-b-btn" class="ghost" type="button">清空 B</button>
+                                </div>
+                                <div class="two-col-panels">
+                                    <div>
+                                        <label>区域 A</label>
+                                        <div id="fastest-path-region-a-info" class="info-panel empty">区域 A 未设置</div>
+                                    </div>
+                                    <div>
+                                        <label>区域 B</label>
+                                        <div id="fastest-path-region-b-info" class="info-panel empty">区域 B 未设置</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="panel-group">
+                                <div class="panel-group-title">时间参数</div>
+                                <div class="field-grid region-time-grid">
+                                    <div>
+                                        <label for="fastest-path-start">开始时间</label>
+                                        <input id="fastest-path-start" type="datetime-local">
+                                    </div>
+                                    <div>
+                                        <label for="fastest-path-end">结束时间</label>
+                                        <input id="fastest-path-end" type="datetime-local">
+                                    </div>
+                                    <div>
+                                        <label for="fastest-path-interval">时间粒度</label>
+                                        <select id="fastest-path-interval">
+                                            <option value="10">10 分钟</option>
+                                            <option value="30">30 分钟</option>
+                                            <option value="60" selected>60 分钟</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label for="fastest-path-delta">ΔT（分钟）</label>
+                                        <input id="fastest-path-delta" type="number" min="1" step="10" value="120">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="panel-group">
+                                <div class="panel-group-title">分析结果</div>
+                                <button id="fastest-path-btn" class="primary wide" type="button">开始分析</button>
+                                <label for="fastest-path-bucket">时间段</label>
+                                <select id="fastest-path-bucket"></select>
+                                <div class="density-time-controls">
+                                    <button id="fastest-path-prev" class="ghost" type="button">上一段</button>
+                                    <button id="fastest-path-play" class="primary" type="button">播放</button>
+                                    <button id="fastest-path-next" class="ghost" type="button">下一段</button>
+                                </div>
+                                <input id="fastest-path-timeline" type="range" min="0" max="0" value="0" step="1">
+                                <div id="fastest-path-info" class="info-panel empty">等待分析</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
 		</section>
 
-        <section class="stack">
-            <div class="stack-title">预留功能</div>
-            <nav class="tool-list reserved" aria-label="预留功能">
-                <button class="tool-btn ghost-btn" type="button" disabled>
-                    <span class="tool-btn-title">频繁路径分析 1</span>
-                    <span class="tool-btn-state">待接入</span>
-                </button>
-                <button class="tool-btn ghost-btn" type="button" disabled>
-                    <span class="tool-btn-title">频繁路径分析 2</span>
-                    <span class="tool-btn-state">待接入</span>
-                </button>
-                <button class="tool-btn ghost-btn" type="button" disabled>
-                    <span class="tool-btn-title">通行时间分析</span>
-                    <span class="tool-btn-state">待接入</span>
-                </button>
-            </nav>
-        </section>
     </aside>
 
     <main class="stage">

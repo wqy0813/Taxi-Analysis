@@ -45,6 +45,16 @@ struct FlowBucket {
     double bToA = 0.0;
 };
 
+struct FastestPathBucket {
+    long long bucketStart = 0;
+    bool found = false;
+    int taxiId = 0;
+    long long leaveTime = 0;
+    long long enterTime = 0;
+    long long travelTime = 0;
+    std::vector<GPSPoint> points;
+};
+
 //新增：区域矩形（用于F6功能）
 struct RegionRect {
     double minLon = 0.0;
@@ -111,6 +121,16 @@ public:
         double targetMaxLon, double targetMaxLat,
         double globalMinLon, double globalMinLat,
         double globalMaxLon, double globalMaxLat,
+        long long tStart,
+        long long bucketSize,
+        int bucketCount,
+        long long deltaT);
+
+    static std::vector<FastestPathBucket> queryFastestPathsBetweenRegions(
+        double minLonA, double minLatA,
+        double maxLonA, double maxLatA,
+        double minLonB, double minLatB,
+        double maxLonB, double maxLatB,
         long long tStart,
         long long bucketSize,
         int bucketCount,

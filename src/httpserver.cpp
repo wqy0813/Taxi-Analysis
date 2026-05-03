@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include "datamanager.h"
 #include "densityanalysis.h"
+#include "frequentpathmanager.h"
 #include "httplib.h"
 #include "json.hpp"
 #include "logger.h"
@@ -1556,6 +1557,379 @@ server.Post("/api/region-flow/single", [this](const httplib::Request& req, httpl
             << ", deltaT:" << deltaT
             << ", totalIncoming:" << totalIncoming
             << ", totalOutgoing:" << totalOutgoing
+            << ")" << std::endl;
+
+    res.set_content(resp.dump(), "application/json; charset=utf-8");
+});
+
+server.Post("/api/frequent-paths", [this](const httplib::Request& req, httplib::Response& res) {
+    const auto t_start = std::chrono::steady_clock::now();
+
+    json body;
+    std::string errorMessage;
+    if (!parseJsonBody(req, body, errorMessage)) {
+        res.status = 400;
+        res.set_content(makeError("INVALID_JSON", errorMessage).dump(), "application/json; charset=utf-8");
+        return;
+    }
+
+    int k = 10;
+    double minLengthMeters = 0.0;
+    std::string dbPath;
+
+    if (body.contains("k") && body["k"].is_number_integer()) {
+        k = body["k"].get<int>();
+    }
+    if (body.contains("minLengthMeters") && body["minLengthMeters"].is_number()) {
+        minLengthMeters = body["minLengthMeters"].get<double>();
+    }
+    if (body.contains("dbPath") && body["dbPath"].is_string()) {
+        dbPath = body["dbPath"].get<std::string>();
+    }
+
+    if (k <= 0 || k > 100) {
+        res.status = 400;
+        res.set_content(makeError("INVALID_ARGUMENT", "k must be between 1 and 100").dump(), "application/json; charset=utf-8");
+        return;
+    }
+    if (minLengthMeters < 0.0) {
+        res.status = 400;
+        res.set_content(makeError("INVALID_ARGUMENT", "minLengthMeters must be >= 0").dump(), "application/json; charset=utf-8");
+        return;
+    }
+
+    if (dbPath.empty()) {
+        dbPath = (fs::path(m_config.dataDir) / "frequent_paths.db").lexically_normal().string();
+    }
+
+    FrequentPathQuery query;
+    query.k = k;
+    query.minLengthMeters = minLengthMeters;
+    query.dbPath = dbPath;
+
+    std::vector<FrequentPathRecord> records;
+    try {
+        records = FrequentPathManager::queryTopK(query);
+    } catch (const std::exception& ex) {
+        res.status = 500;
+        res.set_content(makeError("FREQUENT_PATH_QUERY_FAILED", ex.what()).dump(), "application/json; charset=utf-8");
+        return;
+    }
+
+    json paths = json::array();
+    for (const auto& record : records) {
+        json points = json::array();
+        for (const auto& point : record.points) {
+            points.push_back({
+                {"lon", point.lon},
+                {"lat", point.lat}
+            });
+        }
+
+        paths.push_back({
+            {"rank", record.rank},
+            {"frequency", record.frequency},
+            {"lengthMeters", record.lengthMeters},
+            {"cellCount", record.cellCount},
+            {"points", std::move(points)}
+        });
+    }
+
+    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_start
+    ).count();
+
+    json data;
+    data["k"] = k;
+    data["minLengthMeters"] = minLengthMeters;
+    data["dbPath"] = dbPath;
+    data["paths"] = std::move(paths);
+    data["elapsedMs"] = totalMs;
+
+    json resp;
+    resp["success"] = true;
+    resp["data"] = std::move(data);
+
+    Debug() << "[frequent-paths] " << totalMs << "ms"
+            << " (k:" << k
+            << ", minLengthMeters:" << minLengthMeters
+            << ", resultCount:" << records.size()
+            << ")" << std::endl;
+
+    res.set_content(resp.dump(), "application/json; charset=utf-8");
+});
+
+server.Post("/api/frequent-paths/region-to-region", [this](const httplib::Request& req, httplib::Response& res) {
+    const auto t_start = std::chrono::steady_clock::now();
+
+    json body;
+    std::string errorMessage;
+    if (!parseJsonBody(req, body, errorMessage)) {
+        res.status = 400;
+        res.set_content(makeError("INVALID_JSON", errorMessage).dump(), "application/json; charset=utf-8");
+        return;
+    }
+
+    auto tryReadDouble = [&](const char* key, double& out) {
+        if (!body.contains(key) || !body[key].is_number()) return false;
+        out = body[key].get<double>();
+        return true;
+    };
+
+    int k = 10;
+    double minLengthMeters = 0.0;
+    std::string dbPath;
+    double minLonA = 0.0, minLatA = 0.0, maxLonA = 0.0, maxLatA = 0.0;
+    double minLonB = 0.0, minLatB = 0.0, maxLonB = 0.0, maxLatB = 0.0;
+
+    if (body.contains("k") && body["k"].is_number_integer()) {
+        k = body["k"].get<int>();
+    }
+    if (body.contains("minLengthMeters") && body["minLengthMeters"].is_number()) {
+        minLengthMeters = body["minLengthMeters"].get<double>();
+    }
+    if (body.contains("dbPath") && body["dbPath"].is_string()) {
+        dbPath = body["dbPath"].get<std::string>();
+    }
+
+    if (!tryReadDouble("minLonA", minLonA) ||
+        !tryReadDouble("minLatA", minLatA) ||
+        !tryReadDouble("maxLonA", maxLonA) ||
+        !tryReadDouble("maxLatA", maxLatA) ||
+        !tryReadDouble("minLonB", minLonB) ||
+        !tryReadDouble("minLatB", minLatB) ||
+        !tryReadDouble("maxLonB", maxLonB) ||
+        !tryReadDouble("maxLatB", maxLatB)) {
+        res.status = 400;
+        res.set_content(
+            makeError(
+                "INVALID_ARGUMENT",
+                "required fields: minLonA,minLatA,maxLonA,maxLatA,minLonB,minLatB,maxLonB,maxLatB"
+            ).dump(),
+            "application/json; charset=utf-8"
+        );
+        return;
+    }
+
+    if (k <= 0 || k > 100) {
+        res.status = 400;
+        res.set_content(makeError("INVALID_ARGUMENT", "k must be between 1 and 100").dump(), "application/json; charset=utf-8");
+        return;
+    }
+    if (minLengthMeters < 0.0) {
+        res.status = 400;
+        res.set_content(makeError("INVALID_ARGUMENT", "minLengthMeters must be >= 0").dump(), "application/json; charset=utf-8");
+        return;
+    }
+    if (minLonA > maxLonA || minLatA > maxLatA || minLonB > maxLonB || minLatB > maxLatB) {
+        res.status = 400;
+        res.set_content(makeError("INVALID_ARGUMENT", "invalid rectangle bounds").dump(), "application/json; charset=utf-8");
+        return;
+    }
+
+    if (dbPath.empty()) {
+        dbPath = (fs::path(m_config.dataDir) / "frequent_paths.db").lexically_normal().string();
+    }
+
+    FrequentPathRegionQuery query;
+    query.k = k;
+    query.minLengthMeters = minLengthMeters;
+    query.dbPath = dbPath;
+    query.minLonA = minLonA;
+    query.minLatA = minLatA;
+    query.maxLonA = maxLonA;
+    query.maxLatA = maxLatA;
+    query.minLonB = minLonB;
+    query.minLatB = minLatB;
+    query.maxLonB = maxLonB;
+    query.maxLatB = maxLatB;
+
+    std::vector<FrequentPathRecord> records;
+    try {
+        records = FrequentPathManager::queryTopKBetweenRegions(query);
+    } catch (const std::exception& ex) {
+        res.status = 500;
+        res.set_content(makeError("FREQUENT_PATH_REGION_QUERY_FAILED", ex.what()).dump(), "application/json; charset=utf-8");
+        return;
+    }
+
+    json paths = json::array();
+    for (const auto& record : records) {
+        json points = json::array();
+        for (const auto& point : record.points) {
+            points.push_back({
+                {"lon", point.lon},
+                {"lat", point.lat}
+            });
+        }
+
+        paths.push_back({
+            {"rank", record.rank},
+            {"frequency", record.frequency},
+            {"lengthMeters", record.lengthMeters},
+            {"cellCount", record.cellCount},
+            {"points", std::move(points)}
+        });
+    }
+
+    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_start
+    ).count();
+
+    json data;
+    data["k"] = k;
+    data["minLengthMeters"] = minLengthMeters;
+    data["dbPath"] = dbPath;
+    data["regionA"] = {
+        {"minLon", minLonA},
+        {"minLat", minLatA},
+        {"maxLon", maxLonA},
+        {"maxLat", maxLatA}
+    };
+    data["regionB"] = {
+        {"minLon", minLonB},
+        {"minLat", minLatB},
+        {"maxLon", maxLonB},
+        {"maxLat", maxLatB}
+    };
+    data["paths"] = std::move(paths);
+    data["elapsedMs"] = totalMs;
+
+    json resp;
+    resp["success"] = true;
+    resp["data"] = std::move(data);
+
+    Debug() << "[frequent-paths-region] " << totalMs << "ms"
+            << " (k:" << k
+            << ", minLengthMeters:" << minLengthMeters
+            << ", resultCount:" << records.size()
+            << ")" << std::endl;
+
+    res.set_content(resp.dump(), "application/json; charset=utf-8");
+});
+
+server.Post("/api/fastest-paths/region-to-region", [](const httplib::Request& req, httplib::Response& res) {
+    const auto t_start = std::chrono::steady_clock::now();
+
+    json body;
+    std::string errorMessage;
+    if (!parseJsonBody(req, body, errorMessage)) {
+        res.status = 400;
+        res.set_content(makeError("INVALID_JSON", errorMessage).dump(), "application/json; charset=utf-8");
+        return;
+    }
+
+    auto tryReadDouble = [&](const char* key, double& out) {
+        if (!body.contains(key) || !body[key].is_number()) return false;
+        out = body[key].get<double>();
+        return true;
+    };
+    auto tryReadInt64 = [&](const char* key, long long& out) {
+        if (!body.contains(key) || !body[key].is_number_integer()) return false;
+        out = body[key].get<long long>();
+        return true;
+    };
+    auto tryReadInt = [&](const char* key, int& out) {
+        if (!body.contains(key) || !body[key].is_number_integer()) return false;
+        out = body[key].get<int>();
+        return true;
+    };
+
+    double minLonA = 0.0, minLatA = 0.0, maxLonA = 0.0, maxLatA = 0.0;
+    double minLonB = 0.0, minLatB = 0.0, maxLonB = 0.0, maxLatB = 0.0;
+    long long tStartValue = 0;
+    long long bucketSize = 0;
+    long long deltaT = 0;
+    int bucketCount = 0;
+
+    if (!tryReadDouble("minLonA", minLonA) ||
+        !tryReadDouble("minLatA", minLatA) ||
+        !tryReadDouble("maxLonA", maxLonA) ||
+        !tryReadDouble("maxLatA", maxLatA) ||
+        !tryReadDouble("minLonB", minLonB) ||
+        !tryReadDouble("minLatB", minLatB) ||
+        !tryReadDouble("maxLonB", maxLonB) ||
+        !tryReadDouble("maxLatB", maxLatB) ||
+        !tryReadInt64("tStart", tStartValue) ||
+        !tryReadInt64("bucketSize", bucketSize) ||
+        !tryReadInt("bucketCount", bucketCount) ||
+        !tryReadInt64("deltaT", deltaT)) {
+        res.status = 400;
+        res.set_content(
+            makeError(
+                "INVALID_ARGUMENT",
+                "required fields: minLonA,minLatA,maxLonA,maxLatA,minLonB,minLatB,maxLonB,maxLatB,tStart,bucketSize,bucketCount,deltaT"
+            ).dump(),
+            "application/json; charset=utf-8"
+        );
+        return;
+    }
+
+    if (minLonA > maxLonA || minLatA > maxLatA || minLonB > maxLonB || minLatB > maxLatB) {
+        res.status = 400;
+        res.set_content(makeError("INVALID_ARGUMENT", "invalid rectangle bounds").dump(), "application/json; charset=utf-8");
+        return;
+    }
+    if (bucketSize <= 0 || bucketCount <= 0 || deltaT <= 0) {
+        res.status = 400;
+        res.set_content(makeError("INVALID_ARGUMENT", "bucketSize>0, bucketCount>0, deltaT>0 required").dump(), "application/json; charset=utf-8");
+        return;
+    }
+    if (!DataManager::hasQuadTree()) {
+        res.status = 503;
+        res.set_content(makeError("SERVICE_UNAVAILABLE", "quadtree not ready").dump(), "application/json; charset=utf-8");
+        return;
+    }
+
+    const auto buckets = DataManager::queryFastestPathsBetweenRegions(
+        minLonA, minLatA, maxLonA, maxLatA,
+        minLonB, minLatB, maxLonB, maxLatB,
+        tStartValue, bucketSize, bucketCount, deltaT
+    );
+
+    json arr = json::array();
+    for (const auto& bucket : buckets) {
+        json points = json::array();
+        for (const auto& point : bucket.points) {
+            points.push_back({
+                {"id", point.id},
+                {"time", point.timestamp},
+                {"lon", point.lon},
+                {"lat", point.lat}
+            });
+        }
+
+        arr.push_back({
+            {"bucketStart", bucket.bucketStart},
+            {"found", bucket.found},
+            {"taxiId", bucket.taxiId},
+            {"leaveTime", bucket.leaveTime},
+            {"enterTime", bucket.enterTime},
+            {"travelTime", bucket.travelTime},
+            {"points", std::move(points)}
+        });
+    }
+
+    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_start
+    ).count();
+
+    json data;
+    data["tStart"] = tStartValue;
+    data["bucketSize"] = bucketSize;
+    data["bucketCount"] = bucketCount;
+    data["deltaT"] = deltaT;
+    data["buckets"] = std::move(arr);
+    data["elapsedMs"] = totalMs;
+
+    json resp;
+    resp["success"] = true;
+    resp["data"] = std::move(data);
+
+    Debug() << "[fastest-paths-region] " << totalMs << "ms"
+            << " (bucketCount:" << bucketCount
+            << ", bucketSize:" << bucketSize
+            << ", deltaT:" << deltaT
             << ")" << std::endl;
 
     res.set_content(resp.dump(), "application/json; charset=utf-8");

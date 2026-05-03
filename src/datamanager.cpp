@@ -1508,3 +1508,153 @@ std::vector<SingleRegionFlowBucket> DataManager::querySingleRegionFlow(
 
     return result;
 }
+
+std::vector<FastestPathBucket> DataManager::queryFastestPathsBetweenRegions(
+    double minLonA, double minLatA,
+    double maxLonA, double maxLatA,
+    double minLonB, double minLatB,
+    double maxLonB, double maxLatB,
+    long long tStart,
+    long long bucketSize,
+    int bucketCount,
+    long long deltaT) {
+
+    std::vector<FastestPathBucket> result;
+    if (bucketCount <= 0 || bucketSize <= 0 || deltaT <= 0) {
+        return result;
+    }
+
+    result.resize(static_cast<std::size_t>(bucketCount));
+    for (int i = 0; i < bucketCount; ++i) {
+        result[static_cast<std::size_t>(i)].bucketStart = tStart + static_cast<long long>(i) * bucketSize;
+    }
+
+    if (!quadTreeRoot || allPoints.empty() || idToRange.empty()) {
+        return result;
+    }
+
+    const long long tEnd = tStart + bucketSize * static_cast<long long>(bucketCount);
+    const long long queryStart = tStart - deltaT;
+    const long long queryEnd = tEnd + deltaT;
+
+    const Rect rectA = makeRect(minLonA, minLatA, maxLonA, maxLatA);
+    const Rect rectB = makeRect(minLonB, minLatB, maxLonB, maxLatB);
+
+    std::unordered_set<int> idsInA = querySpatioTemporalUniqueIds(
+        minLonA, minLatA, maxLonA, maxLatA, queryStart, queryEnd);
+    std::unordered_set<int> idsInB = querySpatioTemporalUniqueIds(
+        minLonB, minLatB, maxLonB, maxLatB, queryStart, queryEnd);
+
+    if (idsInA.empty() || idsInB.empty()) {
+        return result;
+    }
+
+    std::vector<int> candidateIds;
+    candidateIds.reserve(std::min(idsInA.size(), idsInB.size()));
+    if (idsInA.size() <= idsInB.size()) {
+        for (int id : idsInA) {
+            if (idsInB.find(id) != idsInB.end()) {
+                candidateIds.push_back(id);
+            }
+        }
+    } else {
+        for (int id : idsInB) {
+            if (idsInA.find(id) != idsInA.end()) {
+                candidateIds.push_back(id);
+            }
+        }
+    }
+
+    for (int vid : candidateIds) {
+        auto it = idToRange.find(vid);
+        if (it == idToRange.end()) {
+            continue;
+        }
+
+        const VehicleRange& vr = it->second;
+        if (vr.start < 0 || vr.end < vr.start) {
+            continue;
+        }
+
+        int leftIdx = lowerBoundPointIndex(allPoints, vr.start, vr.end, queryStart);
+        int rightExclusive = upperBoundPointIndex(allPoints, vr.start, vr.end, queryEnd);
+        if (leftIdx >= rightExclusive) {
+            continue;
+        }
+        if (leftIdx > vr.start) {
+            --leftIdx;
+        }
+
+        bool pendingA2B = false;
+        long long leaveATime = -1;
+        int leaveIndex = -1;
+
+        for (int i = leftIdx + 1; i < rightExclusive; ++i) {
+            const GPSPoint& prev = allPoints[static_cast<std::size_t>(i - 1)];
+            const GPSPoint& curr = allPoints[static_cast<std::size_t>(i)];
+
+            const bool prevInA = pointInRect(prev, rectA);
+            const bool currInA = pointInRect(curr, rectA);
+            const bool prevInB = pointInRect(prev, rectB);
+            const bool currInB = pointInRect(curr, rectB);
+
+            if (prevInA && !currInA) {
+                leaveATime = estimateLeaveTime(prev, curr, rectA);
+                leaveIndex = i - 1;
+                pendingA2B = true;
+            }
+
+            if (!prevInB && currInB) {
+                const long long enterBTime = estimateEnterTime(prev, curr, rectB);
+                if (!pendingA2B || leaveATime < 0 || leaveIndex < 0) {
+                    continue;
+                }
+
+                const long long travelTime = enterBTime - leaveATime;
+                if (travelTime <= 0 || travelTime > deltaT) {
+                    pendingA2B = false;
+                    leaveATime = -1;
+                    leaveIndex = -1;
+                    continue;
+                }
+
+                if (leaveATime < tStart || leaveATime >= tEnd) {
+                    pendingA2B = false;
+                    leaveATime = -1;
+                    leaveIndex = -1;
+                    continue;
+                }
+
+                int bucketIndex = static_cast<int>((leaveATime - tStart) / bucketSize);
+                if (bucketIndex < 0 || bucketIndex >= bucketCount) {
+                    pendingA2B = false;
+                    leaveATime = -1;
+                    leaveIndex = -1;
+                    continue;
+                }
+
+                FastestPathBucket& bucket = result[static_cast<std::size_t>(bucketIndex)];
+                if (!bucket.found || travelTime < bucket.travelTime) {
+                    bucket.found = true;
+                    bucket.taxiId = vid;
+                    bucket.leaveTime = leaveATime;
+                    bucket.enterTime = enterBTime;
+                    bucket.travelTime = travelTime;
+                    bucket.points.clear();
+
+                    const int pathStart = std::max(leaveIndex, vr.start);
+                    const int pathEnd = std::min(i, vr.end);
+                    for (int idx = pathStart; idx <= pathEnd; ++idx) {
+                        bucket.points.push_back(allPoints[static_cast<std::size_t>(idx)]);
+                    }
+                }
+
+                pendingA2B = false;
+                leaveATime = -1;
+                leaveIndex = -1;
+            }
+        }
+    }
+
+    return result;
+}

@@ -62,9 +62,12 @@ DatabaseManager::~DatabaseManager() {
 }
 
 bool DatabaseManager::open() {
+    Debug() << "DatabaseManager::open begin: " << dbPath << std::endl;
+
     const fs::path dbFilePath(dbPath);
     const fs::path dbDirPath = dbFilePath.parent_path();
     if (!dbDirPath.empty()) {
+        Debug() << "Database directory: " << dbDirPath.string() << std::endl;
         std::error_code ec;
         fs::create_directories(dbDirPath, ec);
         if (ec) {
@@ -73,32 +76,41 @@ bool DatabaseManager::open() {
         }
     }
 
+    Debug() << "Opening sqlite database..." << std::endl;
     if (sqlite3_open(dbPath.c_str(), &db) != SQLITE_OK) {
         Error() << "数据库打开失败: " << sqlite3_errmsg(db) << std::endl;
         return false;
     }
+    Debug() << "sqlite3_open ok" << std::endl;
 
+    Debug() << "SQLite PRAGMA journal_mode" << std::endl;
     if (!execSql(db, "PRAGMA journal_mode = MEMORY;")) {
         return false;
     }
+    Debug() << "SQLite PRAGMA synchronous" << std::endl;
     if (!execSql(db, "PRAGMA synchronous = OFF;")) {
         return false;
     }
+    Debug() << "SQLite PRAGMA temp_store" << std::endl;
     if (!execSql(db, "PRAGMA temp_store = MEMORY;")) {
         return false;
     }
+    Debug() << "SQLite PRAGMA cache_size" << std::endl;
     if (!execSql(db, "PRAGMA cache_size = -262144;")) {   // 约 256MB 页缓存
         return false;
     }
+    Debug() << "SQLite PRAGMA mmap_size" << std::endl;
     if (!execSql(db, "PRAGMA mmap_size = 1073741824;")) { // 1GB mmap，上限由系统决定
         return false;
     }
 
+    Debug() << "Ensuring taxi_points table" << std::endl;
     if (!execSql(db, "CREATE TABLE IF NOT EXISTS taxi_points (id INTEGER, time INTEGER, lon REAL, lat REAL);")) {
         Error() << "建表失败" << std::endl;
         return false;
     }
 
+    Debug() << "DatabaseManager::open ok" << std::endl;
     return true;
 }
 bool DatabaseManager::batchInsert(const std::vector<GPSPoint>& points) {
