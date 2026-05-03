@@ -230,16 +230,67 @@
 </div>
 				
 
-				
+                <div class="tool-item">
+                    <button class="tool-btn" data-panel="single-region-flow" type="button" aria-expanded="false">
+                        <span class="tool-btn-title">区域关联分析 2</span>
+                    </button>
+                    <div class="tool-panel" data-panel="single-region-flow">
+                        <div class="panel-body">
+                            <div class="panel-group">
+                                <div class="panel-group-title">目标区域</div>
+                                <div class="action-row compact">
+                                    <button id="single-region-flow-select-btn" class="primary" type="button">框选目标区域</button>
+                                    <button id="single-region-flow-clear-btn" class="ghost" type="button">清空区域</button>
+                                </div>
+                                <div id="single-region-flow-region-info" class="info-panel empty">目标区域未设置</div>
+                            </div>
+
+                            <div class="panel-group">
+                                <div class="panel-group-title">时间参数</div>
+                                <div class="field-grid region-time-grid">
+                                    <div>
+                                        <label for="single-region-flow-start">开始时间</label>
+                                        <input id="single-region-flow-start" type="datetime-local">
+                                    </div>
+                                    <div>
+                                        <label for="single-region-flow-end">结束时间</label>
+                                        <input id="single-region-flow-end" type="datetime-local">
+                                    </div>
+                                    <div>
+                                        <label for="single-region-flow-interval">时间粒度</label>
+                                        <select id="single-region-flow-interval">
+                                            <option value="10">10 分钟</option>
+                                            <option value="30">30 分钟</option>
+                                            <option value="60" selected>60 分钟</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label for="single-region-flow-delta">ΔT（分钟）</label>
+                                        <input id="single-region-flow-delta" type="number" min="0" step="10" value="120">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="panel-group">
+                                <div class="panel-group-title">分析结果</div>
+                                <button id="single-region-flow-btn" class="primary wide" type="button">开始分析</button>
+                                <div id="single-region-flow-info" class="info-panel empty">等待分析</div>
+                                <div class="density-trend-shell">
+                                    <div class="density-trend-shell-head">
+                                        <span class="density-trend-shell-title">目标区域流入流出趋势</span>
+                                        <button id="single-region-flow-expand" class="density-trend-expand" type="button" aria-label="放大趋势图">⛶</button>
+                                    </div>
+                                    <div id="single-region-flow-chart" class="density-trend-preview" role="img" aria-label="目标区域流入流出趋势预览"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
 		</section>
 
         <section class="stack">
             <div class="stack-title">预留功能</div>
             <nav class="tool-list reserved" aria-label="预留功能">
-                <button class="tool-btn ghost-btn" type="button" disabled>
-                    <span class="tool-btn-title">区域关联分析 2</span>
-                    <span class="tool-btn-state">待接入</span>
-                </button>
                 <button class="tool-btn ghost-btn" type="button" disabled>
                     <span class="tool-btn-title">频繁路径分析 1</span>
                     <span class="tool-btn-state">待接入</span>
@@ -306,6 +357,19 @@
             <button id="region-flow-modal-close" class="density-trend-modal-close" type="button" aria-label="关闭弹层">×</button>
         </header>
         <div id="region-flow-modal-chart" class="density-trend-modal-chart" aria-label="区域双向车流趋势大图"></div>
+    </section>
+</div>
+<div id="single-region-flow-modal" class="density-trend-modal" hidden>
+    <div class="density-trend-modal-backdrop" data-close="1"></div>
+    <section class="density-trend-modal-panel" role="dialog" aria-modal="true" aria-labelledby="single-region-flow-modal-title">
+        <header class="density-trend-modal-head">
+            <div class="density-trend-modal-copy">
+                <h2 id="single-region-flow-modal-title">目标区域关联趋势分析</h2>
+                <p id="single-region-flow-modal-subtitle">共 0 个时间段</p>
+            </div>
+            <button id="single-region-flow-modal-close" class="density-trend-modal-close" type="button" aria-label="关闭弹层">×</button>
+        </header>
+        <div id="single-region-flow-modal-chart" class="density-trend-modal-chart" aria-label="目标区域流入流出趋势大图"></div>
     </section>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>

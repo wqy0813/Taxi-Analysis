@@ -69,6 +69,26 @@
         modalClose: null,
         modalOpen: false,
         lastResult: null
+    },
+
+    singleRegionFlow: {
+        selecting: false,
+        selectionLayer: null,
+        selectionStartPixel: null,
+        selectionEndPixel: null,
+        region: null,
+        polygon: null,
+        dragging: false,
+        dragStartPoint: null,
+        dragOriginRegion: null,
+        chart: null,
+        modal: null,
+        modalChart: null,
+        modalTitle: null,
+        modalSubtitle: null,
+        modalClose: null,
+        modalOpen: false,
+        lastResult: null
     }
 };
 const DENSITY_CHUNK_CELL_SIZE = 16;

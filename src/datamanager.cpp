@@ -640,7 +640,88 @@ long long estimateLeaveTime(const GPSPoint& prev,
     }
     return prev.timestamp + (curr.timestamp - prev.timestamp) / 2;
 }
+
+// 新增：单区域关联流量统计（F6功能）
+bool isValidRegionRect(const RegionRect& rect) {
+    return rect.minLon < rect.maxLon && rect.minLat < rect.maxLat;
+}
+bool rectsOverlap(const RegionRect& a, const RegionRect& b) {
+    return !(a.maxLon <= b.minLon ||
+             a.minLon >= b.maxLon ||
+             a.maxLat <= b.minLat ||
+             a.minLat >= b.maxLat);
+}
+std::vector<RegionRect> buildOuterRegions(
+    const RegionRect& target,
+    const RegionRect& globalBounds) {
+
+    std::vector<RegionRect> regions;
+
+    if (!isValidRegionRect(target) || !isValidRegionRect(globalBounds)) {
+        return regions;
+    }
+
+    // 先把目标区域裁剪到全局边界内，避免越界输入导致外部区域计算异常
+    RegionRect clippedTarget{
+        std::max(target.minLon, globalBounds.minLon),
+        std::max(target.minLat, globalBounds.minLat),
+        std::min(target.maxLon, globalBounds.maxLon),
+        std::min(target.maxLat, globalBounds.maxLat)
+    };
+
+    if (!isValidRegionRect(clippedTarget)) {
+        return regions;
+    }
+
+    // 上方
+    RegionRect top{
+        globalBounds.minLon,
+        clippedTarget.maxLat,
+        globalBounds.maxLon,
+        globalBounds.maxLat
+    };
+
+    // 下方
+    RegionRect bottom{
+        globalBounds.minLon,
+        globalBounds.minLat,
+        globalBounds.maxLon,
+        clippedTarget.minLat
+    };
+
+    // 左侧
+    RegionRect left{
+        globalBounds.minLon,
+        clippedTarget.minLat,
+        clippedTarget.minLon,
+        clippedTarget.maxLat
+    };
+
+    // 右侧
+    RegionRect right{
+        clippedTarget.maxLon,
+        clippedTarget.minLat,
+        globalBounds.maxLon,
+        clippedTarget.maxLat
+    };
+
+    if (isValidRegionRect(top)) {
+        regions.push_back(top);
+    }
+    if (isValidRegionRect(bottom)) {
+        regions.push_back(bottom);
+    }
+    if (isValidRegionRect(left)) {
+        regions.push_back(left);
+    }
+    if (isValidRegionRect(right)) {
+        regions.push_back(right);
+    }
+
+    return regions;
+}
 } // namespace
+
 
 bool DataManager::loadAllPoints(DatabaseManager& dbm) {
     allPoints.clear();
@@ -1341,6 +1422,87 @@ std::vector<FlowBucket> DataManager::queryBidirectionalFlow(
                 pendingB2A = false;
                 leaveBTime = -1;
             }
+        }
+    }
+
+    return result;
+}
+
+// 3. 基于双向流量查询，统计单区域流入/流出流量
+std::vector<SingleRegionFlowBucket> DataManager::querySingleRegionFlow(
+    double targetMinLon, double targetMinLat,
+    double targetMaxLon, double targetMaxLat,
+    double globalMinLon, double globalMinLat,
+    double globalMaxLon, double globalMaxLat,
+    long long tStart,
+    long long bucketSize,
+    int bucketCount,
+    long long deltaT) {
+
+    std::vector<SingleRegionFlowBucket> result;
+
+    if (bucketCount <= 0 || bucketSize <= 0 || deltaT < 0) {
+        return result;
+    }
+
+    RegionRect target{
+        targetMinLon, targetMinLat,
+        targetMaxLon, targetMaxLat
+    };
+
+    RegionRect globalBounds{
+        globalMinLon, globalMinLat,
+        globalMaxLon, globalMaxLat
+    };
+
+    if (!isValidRegionRect(target) || !isValidRegionRect(globalBounds)) {
+        return result;
+    }
+
+    // 目标区域必须与全局范围有交集；否则这个分析没有意义
+    if (!rectsOverlap(target, globalBounds) &&
+        !(target.minLon >= globalBounds.minLon &&
+          target.maxLon <= globalBounds.maxLon &&
+          target.minLat >= globalBounds.minLat &&
+          target.maxLat <= globalBounds.maxLat)) {
+        return result;
+    }
+
+    result.resize(static_cast<std::size_t>(bucketCount));
+    for (int i = 0; i < bucketCount; ++i) {
+        result[static_cast<std::size_t>(i)].bucketStart = tStart + i * bucketSize;
+        result[static_cast<std::size_t>(i)].incoming = 0.0;
+        result[static_cast<std::size_t>(i)].outgoing = 0.0;
+    }
+
+    const std::vector<RegionRect> outerRegions = buildOuterRegions(target, globalBounds);
+    if (outerRegions.empty()) {
+        return result;
+    }
+
+    for (const auto& outer : outerRegions) {
+        const std::vector<FlowBucket> partial = queryBidirectionalFlow(
+            target.minLon, target.minLat,
+            target.maxLon, target.maxLat,
+            outer.minLon, outer.minLat,
+            outer.maxLon, outer.maxLat,
+            tStart,
+            bucketSize,
+            bucketCount,
+            deltaT
+        );
+
+        if (partial.size() != result.size()) {
+            continue;
+        }
+
+        for (std::size_t i = 0; i < result.size(); ++i) {
+            // F5 里 A=target, B=outer
+            // 所以：
+            // A->B = 目标区域流出
+            // B->A = 目标区域流入
+            result[i].outgoing += partial[i].aToB;
+            result[i].incoming += partial[i].bToA;
         }
     }
 

@@ -44,6 +44,21 @@ struct FlowBucket {
     double aToB = 0.0;
     double bToA = 0.0;
 };
+
+//新增：区域矩形（用于F6功能）
+struct RegionRect {
+    double minLon = 0.0;
+    double minLat = 0.0;
+    double maxLon = 0.0;
+    double maxLat = 0.0;
+};
+
+struct SingleRegionFlowBucket {
+    long long bucketStart = 0;
+    double incoming = 0.0; // 其他区域 -> 目标区域
+    double outgoing = 0.0; // 目标区域 -> 其他区域
+};
+
 class DataManager {
 public:
     static void loadTxtFiles(const AppConfig& config);
@@ -89,6 +104,18 @@ public:
         long long bucketSize,
         int bucketCount,
         long long deltaT);
+
+    //新增：单区域关联流量统计（F6功能）
+        static std::vector<SingleRegionFlowBucket> querySingleRegionFlow(
+        double targetMinLon, double targetMinLat,
+        double targetMaxLon, double targetMaxLat,
+        double globalMinLon, double globalMinLat,
+        double globalMaxLon, double globalMaxLat,
+        long long tStart,
+        long long bucketSize,
+        int bucketCount,
+        long long deltaT);
+
 
 private:
     static std::unordered_map<int, VehicleRange> idToRange;
